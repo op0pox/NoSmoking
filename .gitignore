@@ -1,0 +1,24 @@
+# 가상환경
+NS-venv/
+.venv/
+venv/
+
+# 데이터·모델 (원본은 Roboflow / 가중치는 GitHub Release)
+datasets/
+*.pt
+*.onnx
+*.hef
+runs/
+
+# 비밀
+.env
+
+# 파이썬
+__pycache__/
+*.pyc
+
+# 노트북 체크포인트
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
