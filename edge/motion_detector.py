@@ -28,6 +28,7 @@ macOS 참고사항
 from __future__ import annotations
 
 import argparse
+import os
 import time
 from collections import deque
 from typing import Optional
@@ -39,6 +40,8 @@ from ultralytics import YOLO
 
 from cigarette_detector import CigaretteDetector
 from event_filter import EVENT_WINDOW_SEC, EventTimeFilter
+from voice_announcer import STATE_IDLE as ANNOUNCER_IDLE
+from voice_announcer import VoiceAnnouncer
 
 # ============================================================
 # 튜닝 상수 — 5주차·9주차 집중 튜닝 대상. 코드 다른 곳에 매직넘버로
@@ -337,6 +340,7 @@ def draw_status_badge(
     detector: SmokingMotionDetector,
     object_info: Optional[dict] = None,
     event_filter: Optional[EventTimeFilter] = None,
+    announcer: Optional[VoiceAnnouncer] = None,
 ):
     nose = _point(kpts, NOSE)
     anchor = nose if nose is not None else (float(kpts[0][0]), float(kpts[0][1]))
@@ -361,6 +365,8 @@ def draw_status_badge(
     if event_filter is not None:
         marker = "🔔EVENT" if event_filter.confirmed else ""
         text += f" [{event_filter.last_ratio:.0%}/{EVENT_WINDOW_SEC:.0f}s]{marker}"
+    if announcer is not None and announcer.state != ANNOUNCER_IDLE:
+        text += f" 방송:{announcer.state}"
 
     (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
     cv2.rectangle(frame, (x - 4, y - th - 6), (x + tw + 4, y + 4), badge_color, -1)
@@ -418,6 +424,14 @@ def main():
         "--cigarette-model", type=str, default="cigarette-v1-best.pt",
         help="담배/연기 2차 확인 모델 가중치 경로. SMOKING_SUSPECTED인 사람에 대해서만 사용된다.",
     )
+    parser.add_argument(
+        "--first-mp3", type=str, default="assets/audio/first_announce.mp3",
+        help="1차(완곡) 안내 mp3 경로",
+    )
+    parser.add_argument(
+        "--second-mp3", type=str, default="assets/audio/second_announce.mp3",
+        help="2차(법적 고지 포함) 안내 mp3 경로",
+    )
     args = parser.parse_args()
 
     device = select_device()
@@ -425,6 +439,10 @@ def main():
 
     model = YOLO(args.model)
     cigarette_detector = CigaretteDetector(args.cigarette_model, device=device)
+
+    for label, path in (("1차", args.first_mp3), ("2차", args.second_mp3)):
+        if not os.path.isfile(path):
+            print(f"[경고] {label} 안내 mp3가 없습니다: {path} — 해당 안내는 재생되지 않고 로그만 남습니다.")
 
     cap = cv2.VideoCapture(args.camera)
     if not cap.isOpened():
@@ -445,6 +463,7 @@ def main():
     detectors: dict = {}
     object_scores: dict = {}  # track_id -> {"cigarette", "smoke", "combined"} (SUSPECTED일 때만 갱신)
     event_filters: dict = {}  # track_id -> EventTimeFilter (SUSPECTED일 때만 갱신)
+    announcers: dict = {}     # track_id -> VoiceAnnouncer (매 프레임 갱신 — 쿨다운 타임아웃은 시간이 지나면 진행돼야 함)
 
     window_name = "NoSmoking motion_detector  (q: 종료 / r: 리셋)"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -548,7 +567,8 @@ def main():
                     draw_skeleton(frame, kpts, color)
                     draw_wrist_nose_lines(frame, kpts)
                     draw_status_badge(
-                        frame, kpts, detector, object_scores.get(track_id), event_filters.get(track_id)
+                        frame, kpts, detector, object_scores.get(track_id),
+                        event_filters.get(track_id), announcers.get(track_id),
                     )
 
             # 이번 프레임에 안 보인 track에도 update(None)을 줘서 유예시간 로직이 돌게 한다
@@ -556,12 +576,23 @@ def main():
                 if track_id not in seen_ids:
                     detector.update(now, None)
 
+            # 음성 안내 상태 머신은 화면에 안 보이는 사람에 대해서도 매 프레임 진행시켜야
+            # 30초 대기·쿨다운 타이머가 실제 시간에 맞춰 흘러간다
+            for track_id in detectors:
+                announcer = announcers.get(track_id)
+                if announcer is None:
+                    announcer = VoiceAnnouncer(track_id, args.first_mp3, args.second_mp3)
+                    announcers[track_id] = announcer
+                ef = event_filters.get(track_id)
+                announcer.update(now, ef.confirmed if ef is not None else False)
+
             # 오래 안 보인 track은 상태를 폐기(메모리 누수 방지)
             stale_ids = [tid for tid, d in detectors.items() if now - d.last_seen_time > STALE_TRACK_TIMEOUT_SEC]
             for tid in stale_ids:
                 del detectors[tid]
                 object_scores.pop(tid, None)
                 event_filters.pop(tid, None)
+                announcers.pop(tid, None)
 
             dt = now - prev_time
             prev_time = now
@@ -591,6 +622,7 @@ def main():
                 detectors.clear()
                 object_scores.clear()
                 event_filters.clear()
+                announcers.clear()
 
     finally:
         cap.release()
