@@ -38,6 +38,7 @@ import torch
 from ultralytics import YOLO
 
 from cigarette_detector import CigaretteDetector
+from event_filter import EVENT_WINDOW_SEC, EventTimeFilter
 
 # ============================================================
 # 튜닝 상수 — 5주차·9주차 집중 튜닝 대상. 코드 다른 곳에 매직넘버로
@@ -80,6 +81,8 @@ MOTION_WEIGHT = 0.5            # 합산 점수에서 모션 점수(puff 진행�
 OBJECT_WEIGHT = 0.5            # 합산 점수에서 2차 객체 감지 신뢰도 가중치
                                 # MOTION_WEIGHT + OBJECT_WEIGHT 합산 점수. v1 모델(cigarette-v1-best.pt)은
                                 # 아직 정밀도가 안정적이지 않으니(mAP50 ~0.3) 가중치는 5주차 재학습 이후 재튜닝 대상.
+COMBINED_CONFIRM_THRESHOLD = 0.5  # combined 점수가 이 값 이상인 프레임을 "이 프레임은 흡연"으로 판정
+                                    # (event_filter.EventTimeFilter의 10초 윈도 입력값이 됨)
 
 GRAPH_HISTORY_SEC = 60.0       # 하단 그래프에 표시할 과거 구간 길이
 GRAPH_HEIGHT_PX = 140          # 하단 그래프 영역 높이(px)
@@ -333,12 +336,15 @@ def draw_status_badge(
     kpts: np.ndarray,
     detector: SmokingMotionDetector,
     object_info: Optional[dict] = None,
+    event_filter: Optional[EventTimeFilter] = None,
 ):
     nose = _point(kpts, NOSE)
     anchor = nose if nose is not None else (float(kpts[0][0]), float(kpts[0][1]))
     x, y = int(anchor[0]), max(20, int(anchor[1]) - 40)
 
-    if detector.state == STATE_SUSPECTED:
+    if event_filter is not None and event_filter.confirmed:
+        badge_color, text_color = (0, 0, 180), (0, 255, 255)     # 이벤트 확정 — 더 진한 빨강+노란 글씨로 강조
+    elif detector.state == STATE_SUSPECTED:
         badge_color, text_color = (0, 0, 255), (255, 255, 255)   # 빨간 배경
     elif detector.state == STATE_PUFF:
         badge_color, text_color = (0, 200, 255), (0, 0, 0)
@@ -352,6 +358,9 @@ def draw_status_badge(
             f" 2nd(cig={object_info['cigarette']:.2f} "
             f"smoke={object_info['smoke']:.2f} combined={object_info['combined']:.2f})"
         )
+    if event_filter is not None:
+        marker = "🔔EVENT" if event_filter.confirmed else ""
+        text += f" [{event_filter.last_ratio:.0%}/{EVENT_WINDOW_SEC:.0f}s]{marker}"
 
     (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
     cv2.rectangle(frame, (x - 4, y - th - 6), (x + tw + 4, y + 4), badge_color, -1)
@@ -435,6 +444,7 @@ def main():
 
     detectors: dict = {}
     object_scores: dict = {}  # track_id -> {"cigarette", "smoke", "combined"} (SUSPECTED일 때만 갱신)
+    event_filters: dict = {}  # track_id -> EventTimeFilter (SUSPECTED일 때만 갱신)
 
     window_name = "NoSmoking motion_detector  (q: 종료 / r: 리셋)"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -519,10 +529,27 @@ def main():
                             f"combined={combined:.2f}"
                         )
 
+                        # 시간 필터: 순간적인 오탐 프레임 하나로 이벤트가 확정되지 않도록
+                        # 최근 10초 윈도 내 판정 비율(60%)을 본다
+                        ef = event_filters.get(track_id)
+                        if ef is None:
+                            ef = EventTimeFilter(track_id)
+                            event_filters[track_id] = ef
+                        was_confirmed = ef.confirmed
+                        is_smoking_frame = combined >= COMBINED_CONFIRM_THRESHOLD
+                        ef.update(now, is_smoking_frame)
+                        if ef.confirmed and not was_confirmed:
+                            print(
+                                f"[{_ts()}] track {track_id}: 🔔 이벤트 확정 "
+                                f"(최근 {EVENT_WINDOW_SEC:.0f}s 판정 비율 {ef.last_ratio:.0%})"
+                            )
+
                     color = _color_for_track(track_id)
                     draw_skeleton(frame, kpts, color)
                     draw_wrist_nose_lines(frame, kpts)
-                    draw_status_badge(frame, kpts, detector, object_scores.get(track_id))
+                    draw_status_badge(
+                        frame, kpts, detector, object_scores.get(track_id), event_filters.get(track_id)
+                    )
 
             # 이번 프레임에 안 보인 track에도 update(None)을 줘서 유예시간 로직이 돌게 한다
             for track_id, detector in detectors.items():
@@ -534,6 +561,7 @@ def main():
             for tid in stale_ids:
                 del detectors[tid]
                 object_scores.pop(tid, None)
+                event_filters.pop(tid, None)
 
             dt = now - prev_time
             prev_time = now
@@ -562,6 +590,7 @@ def main():
                     d.reset()
                 detectors.clear()
                 object_scores.clear()
+                event_filters.clear()
 
     finally:
         cap.release()
