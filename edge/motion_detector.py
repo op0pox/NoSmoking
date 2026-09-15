@@ -37,6 +37,8 @@ import numpy as np
 import torch
 from ultralytics import YOLO
 
+from cigarette_detector import CigaretteDetector
+
 # ============================================================
 # 튜닝 상수 — 5주차·9주차 집중 튜닝 대상. 코드 다른 곳에 매직넘버로
 # 흩어놓지 말고 항상 여기에 모을 것.
@@ -72,6 +74,12 @@ WRIST_OCCLUSION_GRACE_SEC = 3.0  # 코/어깨는 보이는데 양쪽 손목만 �
 NEAR_EXIT_GRACE_SEC = 0.3      # 손이 멀어진 것으로 판정된 프레임이 이 시간 이상 유지되어야 puff 종료로 인정
                                 # (포즈 추정 노이즈로 거리값이 한두 프레임 튀는 것 방지)
 STALE_TRACK_TIMEOUT_SEC = 5.0  # 이 시간 이상 화면에서 안 보이면 해당 track 상태를 폐기
+
+# 2차 확인(담배/연기 객체 감지) 관련 — SMOKING_SUSPECTED인 사람에 한해서만 실행
+MOTION_WEIGHT = 0.5            # 합산 점수에서 모션 점수(puff 진행도) 가중치
+OBJECT_WEIGHT = 0.5            # 합산 점수에서 2차 객체 감지 신뢰도 가중치
+                                # MOTION_WEIGHT + OBJECT_WEIGHT 합산 점수. v1 모델(cigarette-v1-best.pt)은
+                                # 아직 정밀도가 안정적이지 않으니(mAP50 ~0.3) 가중치는 5주차 재학습 이후 재튜닝 대상.
 
 GRAPH_HISTORY_SEC = 60.0       # 하단 그래프에 표시할 과거 구간 길이
 GRAPH_HEIGHT_PX = 140          # 하단 그래프 영역 높이(px)
@@ -320,7 +328,12 @@ def draw_wrist_nose_lines(frame: np.ndarray, kpts: np.ndarray):
             cv2.line(frame, (int(wr[0]), int(wr[1])), (mx, my), (0, 255, 255), 1)
 
 
-def draw_status_badge(frame: np.ndarray, kpts: np.ndarray, detector: SmokingMotionDetector):
+def draw_status_badge(
+    frame: np.ndarray,
+    kpts: np.ndarray,
+    detector: SmokingMotionDetector,
+    object_info: Optional[dict] = None,
+):
     nose = _point(kpts, NOSE)
     anchor = nose if nose is not None else (float(kpts[0][0]), float(kpts[0][1]))
     x, y = int(anchor[0]), max(20, int(anchor[1]) - 40)
@@ -334,6 +347,11 @@ def draw_status_badge(frame: np.ndarray, kpts: np.ndarray, detector: SmokingMoti
 
     dist_label = f"d={detector.last_dist:.2f}" if detector.last_dist is not None else "d=--"
     text = f"#{detector.track_id} {detector.state} {dist_label} puff={detector.puff_count}"
+    if object_info is not None:
+        text += (
+            f" 2nd(cig={object_info['cigarette']:.2f} "
+            f"smoke={object_info['smoke']:.2f} combined={object_info['combined']:.2f})"
+        )
 
     (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
     cv2.rectangle(frame, (x - 4, y - th - 6), (x + tw + 4, y + 4), badge_color, -1)
@@ -387,12 +405,17 @@ def main():
     parser = argparse.ArgumentParser(description="손-입 반복 모션(흡연 의심) 실시간 감지 프로토타입")
     parser.add_argument("--camera", type=int, default=0, help="cv2.VideoCapture 카메라 인덱스 (기본 0)")
     parser.add_argument("--model", type=str, default="yolov8n-pose.pt", help="YOLOv8-pose 가중치 경로/이름")
+    parser.add_argument(
+        "--cigarette-model", type=str, default="cigarette-v1-best.pt",
+        help="담배/연기 2차 확인 모델 가중치 경로. SMOKING_SUSPECTED인 사람에 대해서만 사용된다.",
+    )
     args = parser.parse_args()
 
     device = select_device()
     print(f"[정보] 추론 디바이스: {device}")
 
     model = YOLO(args.model)
+    cigarette_detector = CigaretteDetector(args.cigarette_model, device=device)
 
     cap = cv2.VideoCapture(args.camera)
     if not cap.isOpened():
@@ -411,6 +434,7 @@ def main():
     )
 
     detectors: dict = {}
+    object_scores: dict = {}  # track_id -> {"cigarette", "smoke", "combined"} (SUSPECTED일 때만 갱신)
 
     window_name = "NoSmoking motion_detector  (q: 종료 / r: 리셋)"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -454,6 +478,7 @@ def main():
                 if device != "cpu":
                     print(f"[경고] {device} 추론 실패({e}) — cpu로 폴백합니다.")
                     device = "cpu"
+                    cigarette_detector.device = device
                     results = model.track(
                         frame, persist=True, verbose=False, device=device, tracker="bytetrack.yaml"
                     )
@@ -466,8 +491,9 @@ def main():
             if result.keypoints is not None and result.boxes is not None and result.boxes.id is not None:
                 kpts_all = result.keypoints.data.cpu().numpy()  # (N, 17, 3)
                 ids = result.boxes.id.cpu().numpy().astype(int)
+                boxes_xyxy = result.boxes.xyxy.cpu().numpy()  # (N, 4) — kpts_all/ids와 같은 순서
 
-                for kpts, track_id in zip(kpts_all, ids):
+                for kpts, track_id, box in zip(kpts_all, ids, boxes_xyxy):
                     track_id = int(track_id)
                     seen_ids.add(track_id)
 
@@ -478,10 +504,25 @@ def main():
 
                     detector.update(now, kpts)
 
+                    # 2차 확인: SMOKING_SUSPECTED인 사람에 한해서만 돌린다 (상시 실행 금지)
+                    if detector.state == STATE_SUSPECTED:
+                        x1, y1, x2, y2 = box
+                        crop = frame[max(0, int(y1)):int(y2), max(0, int(x1)):int(x2)]
+                        obj_conf = cigarette_detector.detect(crop)
+                        motion_score = min(detector.puff_count / MIN_PUFFS, 1.0)
+                        object_score = max(obj_conf["cigarette"], obj_conf["smoke"])
+                        combined = MOTION_WEIGHT * motion_score + OBJECT_WEIGHT * object_score
+                        object_scores[track_id] = {**obj_conf, "combined": combined}
+                        print(
+                            f"[{_ts()}] track {track_id}: 2차 확인 "
+                            f"cig={obj_conf['cigarette']:.2f} smoke={obj_conf['smoke']:.2f} "
+                            f"combined={combined:.2f}"
+                        )
+
                     color = _color_for_track(track_id)
                     draw_skeleton(frame, kpts, color)
                     draw_wrist_nose_lines(frame, kpts)
-                    draw_status_badge(frame, kpts, detector)
+                    draw_status_badge(frame, kpts, detector, object_scores.get(track_id))
 
             # 이번 프레임에 안 보인 track에도 update(None)을 줘서 유예시간 로직이 돌게 한다
             for track_id, detector in detectors.items():
@@ -492,6 +533,7 @@ def main():
             stale_ids = [tid for tid, d in detectors.items() if now - d.last_seen_time > STALE_TRACK_TIMEOUT_SEC]
             for tid in stale_ids:
                 del detectors[tid]
+                object_scores.pop(tid, None)
 
             dt = now - prev_time
             prev_time = now
@@ -519,6 +561,7 @@ def main():
                 for d in detectors.values():
                     d.reset()
                 detectors.clear()
+                object_scores.clear()
 
     finally:
         cap.release()
