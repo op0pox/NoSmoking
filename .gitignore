@@ -10,6 +10,12 @@ datasets/
 *.hef
 runs/
 
+# 테스트/데모용 영상 (얼굴 포함 개인정보 — 절대 커밋 금지)
+test_videos/
+*.mp4
+*.mov
+*.avi
+
 # 비밀
 .env
 
