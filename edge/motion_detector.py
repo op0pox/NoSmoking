@@ -419,6 +419,10 @@ def select_device() -> str:
 def main():
     parser = argparse.ArgumentParser(description="손-입 반복 모션(흡연 의심) 실시간 감지 프로토타입")
     parser.add_argument("--camera", type=int, default=0, help="cv2.VideoCapture 카메라 인덱스 (기본 0)")
+    parser.add_argument(
+        "--source", type=str, default="webcam",
+        help='입력 소스. "webcam"(기본, --camera 인덱스로 라이브 캡처) 또는 영상 파일 경로(예: test.mp4).',
+    )
     parser.add_argument("--model", type=str, default="yolov8n-pose.pt", help="YOLOv8-pose 가중치 경로/이름")
     parser.add_argument(
         "--cigarette-model", type=str, default="cigarette-v1-best.pt",
@@ -444,21 +448,31 @@ def main():
         if not os.path.isfile(path):
             print(f"[경고] {label} 안내 mp3가 없습니다: {path} — 해당 안내는 재생되지 않고 로그만 남습니다.")
 
-    cap = cv2.VideoCapture(args.camera)
-    if not cap.isOpened():
-        raise RuntimeError(
-            f"카메라 인덱스 {args.camera}를 열 수 없습니다. macOS에서는 최초 실행 시 카메라 권한 "
-            f"팝업이 뜹니다 — 허용했는지, 시스템 설정 > 개인정보 보호 및 보안 > 카메라에서 "
-            f"터미널(또는 IDE) 권한이 켜져 있는지 확인하세요."
-        )
+    is_webcam = args.source == "webcam"
 
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    print(f"[정보] 카메라 {args.camera} 사용 중 — 해상도 {width}x{height}")
-    print(
-        "[정보] macOS에서는 아이폰(연속성 카메라)이 인덱스 0으로 잡힐 수 있습니다. "
-        "다른 카메라를 쓰려면 --camera 1 처럼 인덱스를 바꿔서 실행하세요."
-    )
+    if is_webcam:
+        cap = cv2.VideoCapture(args.camera)
+        if not cap.isOpened():
+            raise RuntimeError(
+                f"카메라 인덱스 {args.camera}를 열 수 없습니다. macOS에서는 최초 실행 시 카메라 권한 "
+                f"팝업이 뜹니다 — 허용했는지, 시스템 설정 > 개인정보 보호 및 보안 > 카메라에서 "
+                f"터미널(또는 IDE) 권한이 켜져 있는지 확인하세요."
+            )
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        print(f"[정보] 카메라 {args.camera} 사용 중 — 해상도 {width}x{height}")
+        print(
+            "[정보] macOS에서는 아이폰(연속성 카메라)이 인덱스 0으로 잡힐 수 있습니다. "
+            "다른 카메라를 쓰려면 --camera 1 처럼 인덱스를 바꿔서 실행하세요."
+        )
+    else:
+        cap = cv2.VideoCapture(args.source)
+        if not cap.isOpened():
+            raise RuntimeError(f"영상 파일을 열 수 없습니다: {args.source}")
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        video_fps = cap.get(cv2.CAP_PROP_FPS)
+        print(f"[정보] 영상 파일 사용 중: {args.source} ({width}x{height}, {video_fps:.1f}fps)")
 
     detectors: dict = {}
     object_scores: dict = {}  # track_id -> {"cigarette", "smoke", "combined"} (SUSPECTED일 때만 갱신)
@@ -476,6 +490,10 @@ def main():
         while True:
             ret, frame = cap.read()
             if not ret or frame is None:
+                if not is_webcam:
+                    # 영상 파일은 읽기 실패 = 끝까지 재생한 것. 웹캠처럼 재시도하지 않고 종료한다.
+                    print(f"[정보] 영상 재생 종료: {args.source}")
+                    break
                 consecutive_read_failures += 1
                 if consecutive_read_failures == 1:
                     print("[경고] 프레임을 읽지 못했습니다.")
@@ -491,9 +509,13 @@ def main():
                     break
                 continue
             consecutive_read_failures = 0
-            frame = cv2.flip(frame, 1)  # 셀카처럼 좌우 반전(거울 모드) — 추론도 반전된 프레임 기준으로 일관되게 수행
+            if is_webcam:
+                frame = cv2.flip(frame, 1)  # 셀카처럼 좌우 반전(거울 모드) — 영상 파일에는 적용하지 않음
 
-            now = time.monotonic()
+            # 영상 파일은 처리 속도가 실시간보다 빠르거나 느릴 수 있으므로, 시간 임계값
+            # (MIN_HOLD_SEC, WINDOW_SEC 등)이 영상에 찍힌 실제 경과 시간 기준으로 맞도록
+            # 영상 자체의 재생 위치(ms)를 시간 기준으로 쓴다. 웹캠은 그대로 실시간(wall clock).
+            now = time.monotonic() if is_webcam else cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
 
             try:
                 # tracker를 명시하지 않으면 ultralytics 버전에 따라 new_track_thresh가
@@ -623,6 +645,15 @@ def main():
                 object_scores.clear()
                 event_filters.clear()
                 announcers.clear()
+
+        if not is_webcam:
+            print(f"\n[정보] 결과 요약 — {args.source}")
+            if not detectors:
+                print("  감지된 사람 없음")
+            for tid, d in detectors.items():
+                ef = event_filters.get(tid)
+                event_label = "EVENT 확정" if ef is not None and ef.confirmed else "미확정"
+                print(f"  track {tid}: 최종 상태={d.state} puff={d.puff_count} 이벤트={event_label}")
 
     finally:
         cap.release()
