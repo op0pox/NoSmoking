@@ -436,6 +436,12 @@ def main():
         "--second-mp3", type=str, default="assets/audio/second_announce.mp3",
         help="2차(법적 고지 포함) 안내 mp3 경로",
     )
+    parser.add_argument(
+        "--pose-imgsz", type=int, default=640,
+        help="포즈 모델 추론 해상도. 웹캠 근접 촬영은 기본값(640)으로 충분하지만, "
+             "설치 예정 거리처럼 사람이 화면에 작게 나오는 영상은 1280~1920으로 올려야 "
+             "손목 등 작은 keypoint 정밀도가 확보된다(속도는 느려짐).",
+    )
     args = parser.parse_args()
 
     device = select_device()
@@ -523,7 +529,8 @@ def main():
                 # track id가 영영 배정되지 않을 수 있다. bytetrack은 임계값이 낮고(0.25)
                 # 가벼워서 명시적으로 고정한다.
                 results = model.track(
-                    frame, persist=True, verbose=False, device=device, tracker="bytetrack.yaml"
+                    frame, persist=True, verbose=False, device=device, tracker="bytetrack.yaml",
+                    imgsz=args.pose_imgsz,
                 )
             except Exception as e:  # mps에서 특정 연산이 미지원일 때 cpu로 폴백
                 if device != "cpu":
@@ -531,7 +538,8 @@ def main():
                     device = "cpu"
                     cigarette_detector.device = device
                     results = model.track(
-                        frame, persist=True, verbose=False, device=device, tracker="bytetrack.yaml"
+                        frame, persist=True, verbose=False, device=device, tracker="bytetrack.yaml",
+                        imgsz=args.pose_imgsz,
                     )
                 else:
                     raise
