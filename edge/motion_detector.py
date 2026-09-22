@@ -79,15 +79,17 @@ NEAR_EXIT_GRACE_SEC = 0.3      # 손이 멀어진 것으로 판정된 프레임�
                                 # (포즈 추정 노이즈로 거리값이 한두 프레임 튀는 것 방지)
 STALE_TRACK_TIMEOUT_SEC = 5.0  # 이 시간 이상 화면에서 안 보이면 해당 track 상태를 폐기
 
-# 2차 확인(담배/연기 객체 감지) 관련 — SMOKING_SUSPECTED인 사람에 한해서만 실행
-MOTION_WEIGHT = 0.5            # 합산 점수에서 모션 점수(puff 진행도) 가중치
-OBJECT_WEIGHT = 0.5            # 합산 점수에서 2차 객체 감지 신뢰도 가중치
-                                # MOTION_WEIGHT + OBJECT_WEIGHT 합산 점수. v2 모델(cigarette-v2-best.pt)은
-                                # mAP50 0.355(cigarette 단독 0.557), precision 0.392로 v1(mAP50 ~0.3, precision
-                                # 0.2~0.9 진동) 대비 개선됐지만 여전히 낮은 편이라, 가중치는 5주차 오탐 튜닝
-                                # 대상으로 남겨둔다.
+# 2차 확인(담배/연기 객체 감지) 관련
+OBJECT_CHECK_INTERVAL_SEC = 1.0  # SUSPECTED가 아닌 사람도 이 주기로 2차 확인을 돌린다(SUSPECTED면
+                                  # 매 프레임). 모션 3회를 다 채우지 못해도 담배/연기가 여러 프레임에
+                                  # 걸쳐 보이면 잡을 기회를 주되, 상시 실행은 피해서 연산을 아낀다.
 COMBINED_CONFIRM_THRESHOLD = 0.5  # combined 점수가 이 값 이상인 프레임을 "이 프레임은 흡연"으로 판정
                                     # (event_filter.EventTimeFilter의 10초 윈도 입력값이 됨)
+OBJECT_SIGNAL_HOLD_SEC = 1.5   # cig/smoke 신뢰도가 이번 프레임에 0이어도, 이 시간 이내에 마지막으로
+                                # 감지된 값이 있으면 그 값을 페어링에 대신 쓴다. 객체 감지가 프레임마다
+                                # 깜빡이는 걸(있다가 없다가) 완화하지 않으면, 연관 점수(_pair_score)가
+                                # 매번 정확히 같은 프레임에 두 신호가 겹쳐야만 해서 모션이 최고조여도
+                                # 자꾸 0으로 끊겨버린다(실측으로 확인함).
 
 GRAPH_HISTORY_SEC = 60.0       # 하단 그래프에 표시할 과거 구간 길이
 GRAPH_HEIGHT_PX = 140          # 하단 그래프 영역 높이(px)
@@ -158,6 +160,32 @@ def _mouth_point(kpts: np.ndarray, conf_th: float = KEYPOINT_CONF_THRESHOLD):
         return None
     shoulder_width = _dist(l_sh, r_sh)
     return nose[0], nose[1] + MOUTH_OFFSET_RATIO * shoulder_width
+
+
+def _pair_score(a: float, b: float) -> float:
+    """두 신호(0~1)의 기하평균. 하나라도 0이면 0 —
+    단일 신호(담배만, 모션만 등)만으로는 점수가 오르지 않고, 두 증거가
+    같이 있어야 확정에 가까워지도록 한다."""
+    if a <= 0 or b <= 0:
+        return 0.0
+    return (a * b) ** 0.5
+
+
+def _held_conf(hold_store: dict, track_id: int, cls_name: str, raw_conf: float, now: float) -> float:
+    """raw_conf가 0보다 크면 그 값을 최신 기준으로 기록하고 그대로 반환한다.
+    raw_conf가 0이면 OBJECT_SIGNAL_HOLD_SEC 이내에 마지막으로 감지된 값이
+    있으면 그 값을 대신 반환한다(_pair_score 계산용 — 프레임마다 깜빡이는
+    객체 감지 노이즈 완화). 그 시간도 지났으면 0.0."""
+    person_hold = hold_store.setdefault(track_id, {})
+    if raw_conf > 0:
+        person_hold[cls_name] = (raw_conf, now)
+        return raw_conf
+    entry = person_hold.get(cls_name)
+    if entry is not None:
+        held_conf, held_time = entry
+        if now - held_time <= OBJECT_SIGNAL_HOLD_SEC:
+            return held_conf
+    return 0.0
 
 
 # ============================================================
@@ -504,9 +532,11 @@ def main():
         print(f"[정보] 영상 파일 사용 중: {args.source} ({width}x{height}, {video_fps:.1f}fps)")
 
     detectors: dict = {}
-    object_scores: dict = {}  # track_id -> {"cigarette", "smoke", "combined"} (SUSPECTED일 때만 갱신)
-    event_filters: dict = {}  # track_id -> EventTimeFilter (SUSPECTED일 때만 갱신)
+    object_scores: dict = {}  # track_id -> {"cigarette", "smoke", "combined"} (2차 확인 돈 프레임에만 갱신)
+    event_filters: dict = {}  # track_id -> EventTimeFilter (2차 확인 돈 프레임에만 갱신)
     announcers: dict = {}     # track_id -> VoiceAnnouncer (매 프레임 갱신 — 쿨다운 타임아웃은 시간이 지나면 진행돼야 함)
+    last_object_check: dict = {}  # track_id -> 마지막으로 2차 확인을 돌린 시각 (주기 실행용)
+    object_signal_hold: dict = {}  # track_id -> {클래스명: (conf, 감지시각)} (_held_conf용)
 
     window_name = "NoSmoking motion_detector  (q: 종료 / r: 리셋)"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -586,8 +616,18 @@ def main():
 
                     detector.update(now, kpts)
 
-                    # 2차 확인: SMOKING_SUSPECTED인 사람에 한해서만 돌린다 (상시 실행 금지)
-                    if detector.state == STATE_SUSPECTED:
+                    # 2차 확인: 상시 실행은 아니지만 SUSPECTED만 기다리지도 않는다.
+                    # SUSPECTED면 매 프레임, 아니어도 사람이 있는 한 OBJECT_CHECK_INTERVAL_SEC
+                    # 주기로 체크한다 — 모션 3회를 다 못 채워도 담배/연기가 여러 프레임에
+                    # 걸쳐 보이면 잡을 기회를 준다.
+                    last_check = last_object_check.get(track_id)
+                    should_check_object = (
+                        detector.state == STATE_SUSPECTED
+                        or last_check is None
+                        or now - last_check >= OBJECT_CHECK_INTERVAL_SEC
+                    )
+                    if should_check_object:
+                        last_object_check[track_id] = now
                         x1, y1, x2, y2 = box
                         crop_x1, crop_y1 = max(0, int(x1)), max(0, int(y1))
                         crop = frame[crop_y1:int(y2), crop_x1:int(x2)]
@@ -595,8 +635,19 @@ def main():
                         cig_conf = obj_result[CIGARETTE_CLASS]["conf"]
                         smoke_conf = obj_result[SMOKE_CLASS]["conf"]
                         motion_score = min(detector.puff_count / MIN_PUFFS, 1.0)
-                        object_score = max(cig_conf, smoke_conf)
-                        combined = MOTION_WEIGHT * motion_score + OBJECT_WEIGHT * object_score
+
+                        # 연관 기반 점수: 두 증거가 같이 있어야 점수가 오른다.
+                        # 단일 신호(담배만/연기만/모션만)로는 combined가 0에 가깝다.
+                        # 페어링에는 held 값(짧게 유예된 값)을 써서, 객체 감지가 프레임마다
+                        # 깜빡여도(있다가 없다가) 모션과의 매칭이 자꾸 끊기지 않게 한다.
+                        # 화면 표시·로그에는 raw 값(cig_conf/smoke_conf)을 그대로 쓴다.
+                        held_cig_conf = _held_conf(object_signal_hold, track_id, CIGARETTE_CLASS, cig_conf, now)
+                        held_smoke_conf = _held_conf(object_signal_hold, track_id, SMOKE_CLASS, smoke_conf, now)
+                        combined = max(
+                            _pair_score(held_cig_conf, held_smoke_conf),
+                            _pair_score(held_cig_conf, motion_score),
+                            _pair_score(held_smoke_conf, motion_score),
+                        )
 
                         # 크롭 좌표 -> 원본 프레임 좌표로 변환해서 검출된 프레임에만 박스로 표시
                         # (잔상 유지 없음 — 이번 프레임에 실제로 검출된 것만 그린다)
@@ -665,6 +716,8 @@ def main():
                 object_scores.pop(tid, None)
                 event_filters.pop(tid, None)
                 announcers.pop(tid, None)
+                last_object_check.pop(tid, None)
+                object_signal_hold.pop(tid, None)
 
             dt = now - prev_time
             prev_time = now
@@ -695,6 +748,8 @@ def main():
                 object_scores.clear()
                 event_filters.clear()
                 announcers.clear()
+                last_object_check.clear()
+                object_signal_hold.clear()
 
         if not is_webcam:
             print(f"\n[정보] 결과 요약 — {args.source}")
