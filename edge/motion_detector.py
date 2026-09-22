@@ -82,8 +82,10 @@ STALE_TRACK_TIMEOUT_SEC = 5.0  # 이 시간 이상 화면에서 안 보이면 �
 # 2차 확인(담배/연기 객체 감지) 관련 — SMOKING_SUSPECTED인 사람에 한해서만 실행
 MOTION_WEIGHT = 0.5            # 합산 점수에서 모션 점수(puff 진행도) 가중치
 OBJECT_WEIGHT = 0.5            # 합산 점수에서 2차 객체 감지 신뢰도 가중치
-                                # MOTION_WEIGHT + OBJECT_WEIGHT 합산 점수. v1 모델(cigarette-v1-best.pt)은
-                                # 아직 정밀도가 안정적이지 않으니(mAP50 ~0.3) 가중치는 5주차 재학습 이후 재튜닝 대상.
+                                # MOTION_WEIGHT + OBJECT_WEIGHT 합산 점수. v2 모델(cigarette-v2-best.pt)은
+                                # mAP50 0.355(cigarette 단독 0.557), precision 0.392로 v1(mAP50 ~0.3, precision
+                                # 0.2~0.9 진동) 대비 개선됐지만 여전히 낮은 편이라, 가중치는 5주차 오탐 튜닝
+                                # 대상으로 남겨둔다.
 COMBINED_CONFIRM_THRESHOLD = 0.5  # combined 점수가 이 값 이상인 프레임을 "이 프레임은 흡연"으로 판정
                                     # (event_filter.EventTimeFilter의 10초 윈도 입력값이 됨)
 
@@ -425,7 +427,7 @@ def main():
     )
     parser.add_argument("--model", type=str, default="yolov8n-pose.pt", help="YOLOv8-pose 가중치 경로/이름")
     parser.add_argument(
-        "--cigarette-model", type=str, default="cigarette-v1-best.pt",
+        "--cigarette-model", type=str, default="cigarette-v2-best.pt",
         help="담배/연기 2차 확인 모델 가중치 경로. SMOKING_SUSPECTED인 사람에 대해서만 사용된다.",
     )
     parser.add_argument(
