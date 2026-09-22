@@ -38,7 +38,7 @@ import numpy as np
 import torch
 from ultralytics import YOLO
 
-from cigarette_detector import CigaretteDetector
+from cigarette_detector import CIGARETTE_CLASS, SMOKE_CLASS, CigaretteDetector
 from event_filter import EVENT_WINDOW_SEC, EventTimeFilter
 from voice_announcer import STATE_IDLE as ANNOUNCER_IDLE
 from voice_announcer import VoiceAnnouncer
@@ -125,6 +125,12 @@ PALETTE = [
     (66, 135, 245), (66, 245, 173), (245, 66, 230), (245, 173, 66),
     (173, 66, 245), (80, 220, 80), (60, 60, 245), (66, 200, 245),
 ]
+
+# 2차 확인(담배/연기) 검출 박스 색상 — BGR, 클래스별로 눈에 띄게 다른 색
+OBJECT_BOX_COLORS = {
+    CIGARETTE_CLASS: (0, 0, 255),    # 빨강
+    SMOKE_CLASS: (255, 160, 0),      # 파랑 계열
+}
 
 
 def _ts() -> str:
@@ -375,6 +381,21 @@ def draw_status_badge(
     cv2.putText(frame, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, text_color, 1, cv2.LINE_AA)
 
 
+def draw_object_boxes(frame: np.ndarray, boxes: list):
+    """2차 확인(담배/연기)에서 이번 프레임에 실제로 검출된 것만 박스로 그린다.
+    잔상 유지 없음 — boxes가 비어 있으면 아무것도 그리지 않는다."""
+    for det in boxes:
+        x1, y1, x2, y2 = det["box"]
+        color = OBJECT_BOX_COLORS.get(det["class"], (0, 255, 0))
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
+
+        label = f"{det['class']} {det['conf']:.2f}"
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
+        label_y = max(th + 6, y1)
+        cv2.rectangle(frame, (x1, label_y - th - 6), (x1 + tw + 6, label_y), color, -1)
+        cv2.putText(frame, label, (x1 + 3, label_y - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv2.LINE_AA)
+
+
 def draw_graph_panel(width: int, height: int, detectors: dict, now: float) -> np.ndarray:
     """최근 GRAPH_HISTORY_SEC초 동안의 정규화 거리 파형을 그린다."""
     panel = np.full((height, width, 3), 30, dtype=np.uint8)
@@ -568,15 +589,34 @@ def main():
                     # 2차 확인: SMOKING_SUSPECTED인 사람에 한해서만 돌린다 (상시 실행 금지)
                     if detector.state == STATE_SUSPECTED:
                         x1, y1, x2, y2 = box
-                        crop = frame[max(0, int(y1)):int(y2), max(0, int(x1)):int(x2)]
-                        obj_conf = cigarette_detector.detect(crop)
+                        crop_x1, crop_y1 = max(0, int(x1)), max(0, int(y1))
+                        crop = frame[crop_y1:int(y2), crop_x1:int(x2)]
+                        obj_result = cigarette_detector.detect(crop)
+                        cig_conf = obj_result[CIGARETTE_CLASS]["conf"]
+                        smoke_conf = obj_result[SMOKE_CLASS]["conf"]
                         motion_score = min(detector.puff_count / MIN_PUFFS, 1.0)
-                        object_score = max(obj_conf["cigarette"], obj_conf["smoke"])
+                        object_score = max(cig_conf, smoke_conf)
                         combined = MOTION_WEIGHT * motion_score + OBJECT_WEIGHT * object_score
-                        object_scores[track_id] = {**obj_conf, "combined": combined}
+
+                        # 크롭 좌표 -> 원본 프레임 좌표로 변환해서 검출된 프레임에만 박스로 표시
+                        # (잔상 유지 없음 — 이번 프레임에 실제로 검출된 것만 그린다)
+                        boxes_this_frame = []
+                        for cls_name, det_info in obj_result.items():
+                            if det_info["box"] is not None:
+                                bx1, by1, bx2, by2 = det_info["box"]
+                                boxes_this_frame.append({
+                                    "class": cls_name,
+                                    "conf": det_info["conf"],
+                                    "box": (bx1 + crop_x1, by1 + crop_y1, bx2 + crop_x1, by2 + crop_y1),
+                                })
+                        draw_object_boxes(frame, boxes_this_frame)
+
+                        object_scores[track_id] = {
+                            "cigarette": cig_conf, "smoke": smoke_conf, "combined": combined,
+                        }
                         print(
                             f"[{_ts()}] track {track_id}: 2차 확인 "
-                            f"cig={obj_conf['cigarette']:.2f} smoke={obj_conf['smoke']:.2f} "
+                            f"cig={cig_conf:.2f} smoke={smoke_conf:.2f} "
                             f"combined={combined:.2f}"
                         )
 

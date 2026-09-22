@@ -22,9 +22,9 @@ SMOKE_CLASS = "smoke"
 class CigaretteDetector:
     """담배/연기 2차 확인 모델 래퍼.
 
-    크롭 이미지 하나를 받아 cigarette/smoke 클래스별 최고 신뢰도를 반환한다.
-    상시 실행하지 않고, 호출하는 쪽(파이프라인)에서 SMOKING_SUSPECTED인
-    사람에 대해서만 detect()를 호출하는 것을 전제로 설계했다.
+    크롭 이미지 하나를 받아 cigarette/smoke 클래스별 최고 신뢰도 검출(신뢰도 +
+    박스 좌표)을 반환한다. 상시 실행하지 않고, 호출하는 쪽(파이프라인)에서
+    SMOKING_SUSPECTED인 사람에 대해서만 detect()를 호출하는 것을 전제로 설계했다.
     """
 
     def __init__(self, model_path: str, device: str = "cpu"):
@@ -32,9 +32,17 @@ class CigaretteDetector:
         self.device = device
 
     def detect(self, crop: np.ndarray) -> dict:
-        """crop에서 cigarette/smoke 각각의 최고 신뢰도(0.0~1.0)를 반환한다.
-        검출이 없거나 crop이 비어 있으면 둘 다 0.0."""
-        result = {CIGARETTE_CLASS: 0.0, SMOKE_CLASS: 0.0}
+        """crop에서 cigarette/smoke 각각의 최고 신뢰도 검출을 반환한다.
+
+        반환: {"cigarette": {"conf": float, "box": (x1, y1, x2, y2) | None},
+               "smoke": {"conf": float, "box": (x1, y1, x2, y2) | None}}
+        box는 crop 기준 픽셀 좌표(정수). 검출이 없거나 crop이 비어 있으면
+        conf=0.0, box=None.
+        """
+        result = {
+            CIGARETTE_CLASS: {"conf": 0.0, "box": None},
+            SMOKE_CLASS: {"conf": 0.0, "box": None},
+        }
         if crop is None or crop.size == 0:
             return result
 
@@ -43,8 +51,11 @@ class CigaretteDetector:
         if boxes is None or len(boxes) == 0:
             return result
 
-        for cls_id, conf in zip(boxes.cls.cpu().numpy(), boxes.conf.cpu().numpy()):
+        for cls_id, conf, xyxy in zip(
+            boxes.cls.cpu().numpy(), boxes.conf.cpu().numpy(), boxes.xyxy.cpu().numpy()
+        ):
             name = self.model.names[int(cls_id)]
-            if name in result and conf > result[name]:
-                result[name] = float(conf)
+            if name in result and conf > result[name]["conf"]:
+                x1, y1, x2, y2 = xyxy.astype(int).tolist()
+                result[name] = {"conf": float(conf), "box": (x1, y1, x2, y2)}
         return result
