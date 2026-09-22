@@ -90,6 +90,18 @@ OBJECT_SIGNAL_HOLD_SEC = 1.5   # cig/smoke 신뢰도가 이번 프레임에 0이
                                 # 깜빡이는 걸(있다가 없다가) 완화하지 않으면, 연관 점수(_pair_score)가
                                 # 매번 정확히 같은 프레임에 두 신호가 겹쳐야만 해서 모션이 최고조여도
                                 # 자꾸 0으로 끊겨버린다(실측으로 확인함).
+HIGH_CONFIDENCE_THRESHOLD = 0.75  # cig_conf 또는 smoke_conf가 이 값 이상이면 짝(모션/다른 클래스)
+                                    # 없이도 그 값 자체로 confirmed 후보가 된다. 카메라가 멀어서
+                                    # 신호가 대부분 짝을 못 맞추는 경우(예: test2.mp4)에도 아주 확실한
+                                    # 단일 검출까지 놓치지 않기 위함 — 다만 v2 모델 precision이 아직
+                                    # 낮으니(0.392) 이 값은 보수적으로(높게) 잡는다. 애매한 신뢰도는
+                                    # 여전히 짝이 있어야 한다.
+CIG_SMOKE_COOCCURRENCE_WINDOW_SEC = 5.0  # 모션이 안 잡혀도, 담배와 연기가 "정확히 같은 프레임"이
+                                          # 아니라 이 시간 이내에만 각각 감지됐으면 서로 짝으로
+                                          # 인정한다. 연기는 담배 연기가 아니어도(김·안개·수증기)
+                                          # 오검출될 수 있어 연기 단독보다는 신뢰도가 높지만, 담배를
+                                          # 입에 무는 순간과 연기가 보이는 순간은 실제로도 약간의
+                                          # 시차가 있을 수 있어 OBJECT_SIGNAL_HOLD_SEC보다 길게 잡는다.
 
 GRAPH_HISTORY_SEC = 60.0       # 하단 그래프에 표시할 과거 구간 길이
 GRAPH_HEIGHT_PX = 140          # 하단 그래프 영역 높이(px)
@@ -171,11 +183,18 @@ def _pair_score(a: float, b: float) -> float:
     return (a * b) ** 0.5
 
 
-def _held_conf(hold_store: dict, track_id: int, cls_name: str, raw_conf: float, now: float) -> float:
+def _held_conf(
+    hold_store: dict, track_id: int, cls_name: str, raw_conf: float, now: float, hold_sec: float
+) -> float:
     """raw_conf가 0보다 크면 그 값을 최신 기준으로 기록하고 그대로 반환한다.
-    raw_conf가 0이면 OBJECT_SIGNAL_HOLD_SEC 이내에 마지막으로 감지된 값이
-    있으면 그 값을 대신 반환한다(_pair_score 계산용 — 프레임마다 깜빡이는
-    객체 감지 노이즈 완화). 그 시간도 지났으면 0.0."""
+    raw_conf가 0이면 hold_sec 이내에 마지막으로 감지된 값이 있으면 그 값을
+    대신 반환한다(_pair_score 계산용 — 프레임마다 깜빡이는 객체 감지 노이즈
+    완화). 그 시간도 지났으면 0.0.
+
+    hold_sec은 호출하는 쪽이 상황에 맞게 넘긴다 — 예를 들어 모션과 짝지을
+    때는 짧게(OBJECT_SIGNAL_HOLD_SEC), 담배·연기끼리 짝지을 때는 "동시가
+    아니어도 됨"을 반영해 더 길게(CIG_SMOKE_COOCCURRENCE_WINDOW_SEC) 쓴다.
+    """
     person_hold = hold_store.setdefault(track_id, {})
     if raw_conf > 0:
         person_hold[cls_name] = (raw_conf, now)
@@ -183,7 +202,7 @@ def _held_conf(hold_store: dict, track_id: int, cls_name: str, raw_conf: float, 
     entry = person_hold.get(cls_name)
     if entry is not None:
         held_conf, held_time = entry
-        if now - held_time <= OBJECT_SIGNAL_HOLD_SEC:
+        if now - held_time <= hold_sec:
             return held_conf
     return 0.0
 
@@ -638,15 +657,39 @@ def main():
 
                         # 연관 기반 점수: 두 증거가 같이 있어야 점수가 오른다.
                         # 단일 신호(담배만/연기만/모션만)로는 combined가 0에 가깝다.
-                        # 페어링에는 held 값(짧게 유예된 값)을 써서, 객체 감지가 프레임마다
-                        # 깜빡여도(있다가 없다가) 모션과의 매칭이 자꾸 끊기지 않게 한다.
                         # 화면 표시·로그에는 raw 값(cig_conf/smoke_conf)을 그대로 쓴다.
-                        held_cig_conf = _held_conf(object_signal_hold, track_id, CIGARETTE_CLASS, cig_conf, now)
-                        held_smoke_conf = _held_conf(object_signal_hold, track_id, SMOKE_CLASS, smoke_conf, now)
+                        #
+                        # 모션과 짝지을 때는 짧은 유예(OBJECT_SIGNAL_HOLD_SEC)만 써서 프레임 단위
+                        # 깜빡임만 완화한다. 담배·연기끼리 짝지을 때는 더 긴 유예
+                        # (CIG_SMOKE_COOCCURRENCE_WINDOW_SEC)를 써서 "정확히 같은 프레임"이
+                        # 아니어도 인정한다 — 연기는 담배 연기가 아니어도(김·안개·수증기)
+                        # 오검출될 수 있어 연기 단독보다 신뢰도가 높은 담배와 짝지어서 검증한다.
+                        held_cig_short = _held_conf(
+                            object_signal_hold, track_id, CIGARETTE_CLASS, cig_conf, now, OBJECT_SIGNAL_HOLD_SEC
+                        )
+                        held_smoke_short = _held_conf(
+                            object_signal_hold, track_id, SMOKE_CLASS, smoke_conf, now, OBJECT_SIGNAL_HOLD_SEC
+                        )
+                        held_cig_long = _held_conf(
+                            object_signal_hold, track_id, CIGARETTE_CLASS, cig_conf, now,
+                            CIG_SMOKE_COOCCURRENCE_WINDOW_SEC,
+                        )
+                        held_smoke_long = _held_conf(
+                            object_signal_hold, track_id, SMOKE_CLASS, smoke_conf, now,
+                            CIG_SMOKE_COOCCURRENCE_WINDOW_SEC,
+                        )
+
+                        # 아주 확실한 단일 검출(raw 값 기준, held 아님)은 짝 없이도 인정한다 —
+                        # 카메라가 멀어 신호끼리 좀처럼 안 겹치는 경우를 위한 예외.
+                        high_conf_bypass = max(
+                            cig_conf if cig_conf >= HIGH_CONFIDENCE_THRESHOLD else 0.0,
+                            smoke_conf if smoke_conf >= HIGH_CONFIDENCE_THRESHOLD else 0.0,
+                        )
                         combined = max(
-                            _pair_score(held_cig_conf, held_smoke_conf),
-                            _pair_score(held_cig_conf, motion_score),
-                            _pair_score(held_smoke_conf, motion_score),
+                            _pair_score(held_cig_long, held_smoke_long),
+                            _pair_score(held_cig_short, motion_score),
+                            _pair_score(held_smoke_short, motion_score),
+                            high_conf_bypass,
                         )
 
                         # 크롭 좌표 -> 원본 프레임 좌표로 변환해서 검출된 프레임에만 박스로 표시
