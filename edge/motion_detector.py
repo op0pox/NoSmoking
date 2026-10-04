@@ -80,6 +80,16 @@ NEAR_EXIT_GRACE_SEC = 0.3      # 손이 멀어진 것으로 판정된 프레임�
 STALE_TRACK_TIMEOUT_SEC = 5.0  # 이 시간 이상 화면에서 안 보이면 해당 track 상태를 폐기
 
 # 2차 확인(담배/연기 객체 감지) 관련
+OBJECT_CROP_MARGIN_RATIO = 0.5  # 2차 확인 크롭 범위(입+손목 영역) 바깥으로 어깨너비 대비 이 비율만큼
+                                 # 여유를 준다. 실측 결과 사람 전체 bbox를 그대로 쓰면 배경이 섞여
+                                 # 들어가 오검출(예: 배경의 금속 봉을 담배로 0.88 신뢰도로 오인)이
+                                 # 발생했다 — 입~손 영역만 좁혀서 이 문제를 완화한다.
+MAX_RELEVANT_WRIST_DISTANCE_RATIO = 1.2  # 이 값(어깨너비 배수)보다 입에서 먼 손목은 크롭 범위에
+                                          # 포함하지 않는다. 손목 keypoint는 신뢰도만으로는 못 거른다 —
+                                          # 실측 결과 화면 밖으로 나간 손목이 신뢰도 0.69로 나온 사례가
+                                          # 있었고, 그걸 그대로 포함하면 크롭이 다시 사람 전체만큼
+                                          # 커져버린다. 핀치 그립 최대 거리(NEAR_THRESHOLD 0.6)보다는
+                                          # 넉넉하게 잡아 정상적인 손 위치는 놓치지 않게 한다.
 OBJECT_CHECK_INTERVAL_SEC = 1.0  # SUSPECTED가 아닌 사람도 이 주기로 2차 확인을 돌린다(SUSPECTED면
                                   # 매 프레임). 모션 3회를 다 채우지 못해도 담배/연기가 여러 프레임에
                                   # 걸쳐 보이면 잡을 기회를 주되, 상시 실행은 피해서 연산을 아낀다.
@@ -172,6 +182,54 @@ def _mouth_point(kpts: np.ndarray, conf_th: float = KEYPOINT_CONF_THRESHOLD):
         return None
     shoulder_width = _dist(l_sh, r_sh)
     return nose[0], nose[1] + MOUTH_OFFSET_RATIO * shoulder_width
+
+
+def _object_crop_box(kpts: np.ndarray, frame_w: int, frame_h: int):
+    """2차 확인(담배/연기 감지)용 크롭 범위를 입 추정 위치 + 손목 위치로 계산한다.
+
+    포즈 모델이 내주는 사람 전체 bbox는 "사람 탐지"용으로 최적화된 거라
+    배경이 많이 섞인다(실측으로 확인 — 배경 물체를 담배로 오검출하는
+    원인이 됨). 담배가 실제로 있을 법한 입~손 사이 영역만 잡아서 배경을
+    최대한 배제한다.
+
+    손목이 입 근처(MAX_RELEVANT_WRIST_DISTANCE_RATIO 이내)에 있으면 입 위치와
+    함께 포함해 범위를 잡는다 — 핀치 그립처럼 손이 입에서 좀 떨어져 있어도
+    안 잘리게. 신뢰도만 보고 무조건 포함하면 안 된다 — 실측 결과 반대쪽
+    손목이 화면 밖으로 나가 있는데도 신뢰도가 꽤 높게(0.69) 나온 사례가
+    있었고, 그걸 그대로 포함하면 크롭이 다시 사람 전체만큼 커져버린다.
+    쉬고 있거나 화면 밖인 손은 입에서 멀리 떨어진 값으로 나오므로 거리로
+    걸러낸다. 손목이 둘 다 없거나 너무 멀면 입 주변만으로 폴백한다.
+    마진은 어깨너비 비례라 카메라 거리가 달라져도 일관되게 동작한다.
+
+    반환: (x1, y1, x2, y2) 프레임 좌표(정수, 프레임 경계로 clip됨).
+    계산 불가(코/어깨 미검출 등)하면 None.
+    """
+    mouth = _mouth_point(kpts)
+    l_sh = _point(kpts, LEFT_SHOULDER)
+    r_sh = _point(kpts, RIGHT_SHOULDER)
+    if mouth is None or l_sh is None or r_sh is None:
+        return None
+    shoulder_width = _dist(l_sh, r_sh)
+    if shoulder_width < 1e-3:
+        return None
+
+    max_wrist_dist = shoulder_width * MAX_RELEVANT_WRIST_DISTANCE_RATIO
+    points = [mouth]
+    for wrist_idx in (LEFT_WRIST, RIGHT_WRIST):
+        wr = _point(kpts, wrist_idx, WRIST_CONF_THRESHOLD)
+        if wr is not None and _dist(wr, mouth) <= max_wrist_dist:
+            points.append(wr)
+
+    margin = shoulder_width * OBJECT_CROP_MARGIN_RATIO
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    x1 = int(max(0, min(xs) - margin))
+    y1 = int(max(0, min(ys) - margin))
+    x2 = int(min(frame_w, max(xs) + margin))
+    y2 = int(min(frame_h, max(ys) + margin))
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return x1, y1, x2, y2
 
 
 def _pair_score(a: float, b: float) -> float:
@@ -622,9 +680,8 @@ def main():
             if result.keypoints is not None and result.boxes is not None and result.boxes.id is not None:
                 kpts_all = result.keypoints.data.cpu().numpy()  # (N, 17, 3)
                 ids = result.boxes.id.cpu().numpy().astype(int)
-                boxes_xyxy = result.boxes.xyxy.cpu().numpy()  # (N, 4) — kpts_all/ids와 같은 순서
 
-                for kpts, track_id, box in zip(kpts_all, ids, boxes_xyxy):
+                for kpts, track_id in zip(kpts_all, ids):
                     track_id = int(track_id)
                     seen_ids.add(track_id)
 
@@ -647,9 +704,16 @@ def main():
                     )
                     if should_check_object:
                         last_object_check[track_id] = now
-                        x1, y1, x2, y2 = box
-                        crop_x1, crop_y1 = max(0, int(x1)), max(0, int(y1))
-                        crop = frame[crop_y1:int(y2), crop_x1:int(x2)]
+                        # 사람 전체 bbox 대신 입+손목 영역만 크롭한다 — 전체 bbox를 쓰면
+                        # 배경이 섞여 들어가 오검출(실측: 배경 금속 봉을 담배로 0.88 오인)로
+                        # 이어질 수 있다. 계산 불가(핵심 keypoint 미검출)하면 crop=None으로
+                        # 넘어가고, detect()가 그 경우 검출 없음으로 안전하게 처리한다.
+                        crop_box = _object_crop_box(kpts, frame.shape[1], frame.shape[0])
+                        if crop_box is None:
+                            crop, crop_x1, crop_y1 = None, 0, 0
+                        else:
+                            crop_x1, crop_y1, crop_x2, crop_y2 = crop_box
+                            crop = frame[crop_y1:crop_y2, crop_x1:crop_x2]
                         obj_result = cigarette_detector.detect(crop)
                         cig_conf = obj_result[CIGARETTE_CLASS]["conf"]
                         smoke_conf = obj_result[SMOKE_CLASS]["conf"]
