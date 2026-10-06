@@ -91,11 +91,14 @@ OBJECT_SIGNAL_HOLD_SEC = 1.5   # cig/smoke 신뢰도가 이번 프레임에 0이
                                 # 매번 정확히 같은 프레임에 두 신호가 겹쳐야만 해서 모션이 최고조여도
                                 # 자꾸 0으로 끊겨버린다(실측으로 확인함).
 HIGH_CONFIDENCE_THRESHOLD = 0.75  # cig_conf 또는 smoke_conf가 이 값 이상이면 짝(모션/다른 클래스)
-                                    # 없이도 그 값 자체로 confirmed 후보가 된다. 카메라가 멀어서
-                                    # 신호가 대부분 짝을 못 맞추는 경우(예: test2.mp4)에도 아주 확실한
-                                    # 단일 검출까지 놓치지 않기 위함 — 다만 v2 모델 precision이 아직
-                                    # 낮으니(0.392) 이 값은 보수적으로(높게) 잡는다. 애매한 신뢰도는
-                                    # 여전히 짝이 있어야 한다.
+                                    # 없이도 combined 후보가 된다 — 단, 아래 두 조건을 같이 만족해야 한다.
+                                    # 실측 결과 v2 모델은 배경 물체를 0.88로도 오인하므로 단일 프레임
+                                    # 신뢰도만으로는 안전하지 않다.
+HIGH_CONF_MIN_PUFFS = 2            # 고신뢰도 바이패스를 쓰려면 최소 이 횟수 이상 puff가 쌓여 있어야 한다
+                                    # (모션이 전혀 없는 상태에서 객체 오검출 하나로 확정되는 걸 막는다).
+HIGH_CONF_SUSTAIN_WINDOW_SEC = 10.0  # 고신뢰도 검출이 지속되는지 보는 시간 창
+HIGH_CONF_SUSTAIN_COUNT = 2        # 이 창 안에 고신뢰도 검출이 이 횟수 이상 있어야 바이패스 인정
+                                    # (순간 오검출 한 번으로는 통과 못 함, 진짜 흡연은 몇 초간 계속 보인다).
 CIG_SMOKE_COOCCURRENCE_WINDOW_SEC = 5.0  # 모션이 안 잡혀도, 담배와 연기가 "정확히 같은 프레임"이
                                           # 아니라 이 시간 이내에만 각각 감지됐으면 서로 짝으로
                                           # 인정한다. 연기는 담배 연기가 아니어도(김·안개·수증기)
@@ -205,6 +208,17 @@ def _held_conf(
         if now - held_time <= hold_sec:
             return held_conf
     return 0.0
+
+
+def _record_high_conf_hit(hits_store: dict, track_id: int, now: float, is_high: bool) -> int:
+    """고신뢰도 검출 시각을 기록하고, HIGH_CONF_SUSTAIN_WINDOW_SEC 창 안의 검출 횟수를 반환한다.
+    is_high가 False면 기록 없이 창만 정리해서 횟수를 돌려준다."""
+    hits = hits_store.setdefault(track_id, deque())
+    if is_high:
+        hits.append(now)
+    while hits and now - hits[0] > HIGH_CONF_SUSTAIN_WINDOW_SEC:
+        hits.popleft()
+    return len(hits)
 
 
 # ============================================================
@@ -556,6 +570,7 @@ def main():
     announcers: dict = {}     # track_id -> VoiceAnnouncer (매 프레임 갱신 — 쿨다운 타임아웃은 시간이 지나면 진행돼야 함)
     last_object_check: dict = {}  # track_id -> 마지막으로 2차 확인을 돌린 시각 (주기 실행용)
     object_signal_hold: dict = {}  # track_id -> {클래스명: (conf, 감지시각)} (_held_conf용)
+    high_conf_hits: dict = {}  # track_id -> 고신뢰도 검출 시각 deque (지속성 판정용)
 
     window_name = "NoSmoking motion_detector  (q: 종료 / r: 리셋)"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -680,11 +695,20 @@ def main():
                         )
 
                         # 아주 확실한 단일 검출(raw 값 기준, held 아님)은 짝 없이도 인정한다 —
-                        # 카메라가 멀어 신호끼리 좀처럼 안 겹치는 경우를 위한 예외.
-                        high_conf_bypass = max(
-                            cig_conf if cig_conf >= HIGH_CONFIDENCE_THRESHOLD else 0.0,
-                            smoke_conf if smoke_conf >= HIGH_CONFIDENCE_THRESHOLD else 0.0,
-                        )
+                        # 단, 지속성(창 안 여러 번)과 최소 모션(puff 누적)을 같이 만족해야 한다.
+                        # 순간 오검출 한 번이나 모션 없는 상태의 오검출은 이 경로로 확정되지 않는다.
+                        raw_high = max(cig_conf, smoke_conf) >= HIGH_CONFIDENCE_THRESHOLD
+                        high_hits = _record_high_conf_hit(high_conf_hits, track_id, now, raw_high)
+                        high_conf_bypass = 0.0
+                        if (
+                            raw_high
+                            and detector.puff_count >= HIGH_CONF_MIN_PUFFS
+                            and high_hits >= HIGH_CONF_SUSTAIN_COUNT
+                        ):
+                            high_conf_bypass = max(
+                                cig_conf if cig_conf >= HIGH_CONFIDENCE_THRESHOLD else 0.0,
+                                smoke_conf if smoke_conf >= HIGH_CONFIDENCE_THRESHOLD else 0.0,
+                            )
                         combined = max(
                             _pair_score(held_cig_long, held_smoke_long),
                             _pair_score(held_cig_short, motion_score),
@@ -761,6 +785,7 @@ def main():
                 announcers.pop(tid, None)
                 last_object_check.pop(tid, None)
                 object_signal_hold.pop(tid, None)
+                high_conf_hits.pop(tid, None)
 
             dt = now - prev_time
             prev_time = now
@@ -793,6 +818,7 @@ def main():
                 announcers.clear()
                 last_object_check.clear()
                 object_signal_hold.clear()
+                high_conf_hits.clear()
 
         if not is_webcam:
             print(f"\n[정보] 결과 요약 — {args.source}")
