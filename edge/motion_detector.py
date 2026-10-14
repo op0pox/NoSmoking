@@ -509,7 +509,7 @@ def main():
     )
     parser.add_argument("--model", type=str, default="yolov8n-pose.pt", help="YOLOv8-pose 가중치 경로/이름")
     parser.add_argument(
-        "--cigarette-model", type=str, default="cigarette-v2-best.pt",
+        "--cigarette-model", type=str, default="cigarette-v4-best.pt",
         help="담배/연기 2차 확인 모델 가중치 경로. SMOKING_SUSPECTED인 사람에 대해서만 사용된다.",
     )
     parser.add_argument(
