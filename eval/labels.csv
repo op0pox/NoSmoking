@@ -1,0 +1,9 @@
+video,label,category,smoke_start_sec,smoke_end_sec,split,note
+drink.MOV,non_smoking,drink,,,main,물 마시기 1명
+test4.MOV,smoking,smoking,,,main,흡연장 약 7명 대부분 흡연
+test5.MOV,smoking,smoking,,,main,흡연장 약 5명 대부분 흡연
+test1.mp4,smoking,smoking,,,reference,3fps·원거리 — 파이프라인 동작 조건 밖
+test2.mp4,smoking,smoking,,,reference,3fps·원거리 — 파이프라인 동작 조건 밖
+test3.mp4,smoking,smoking,,,reference,3fps·원거리 — 파이프라인 동작 조건 밖
+E04_012.mp4,smoking,smoking,,,reference,얼굴 전체 모자이크
+E04_043.mp4,smoking,smoking,,,reference,얼굴 전체 모자이크
