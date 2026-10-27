@@ -68,6 +68,7 @@ edge/          # 파이(현장 장치)에서 돌아갈 코드: 감지 파이프�
 server/        # FastAPI, DB
 dashboard/     # Streamlit
 training/      # 학습 스크립트, 전처리, data.yaml, download_dataset.py
+eval/          # 정량 평가 도구(python -m eval.run), 정답 라벨(labels.csv)
 docs/          # 기획서, 가이드, 회의록
 ```
 

@@ -71,12 +71,16 @@ class VoiceAnnouncer:
 
     매 프레임 update(now, event_confirmed)를 호출한다.
     event_confirmed는 EventTimeFilter.confirmed 값을 그대로 넣으면 된다.
+
+    play_audio=False면 상태 머신은 똑같이 돌되 실제 재생과 재생 로그를
+    생략한다 — 평가 일괄 실행에서 "언제 방송됐을지"만 기록할 때 쓴다.
     """
 
-    def __init__(self, track_id: int, first_mp3: str, second_mp3: str):
+    def __init__(self, track_id: int, first_mp3: str, second_mp3: str, play_audio: bool = True):
         self.track_id = track_id
         self.first_mp3 = first_mp3
         self.second_mp3 = second_mp3
+        self.play_audio = play_audio
 
         self.state = STATE_IDLE
         self._first_announced_at: Optional[float] = None
@@ -87,33 +91,44 @@ class VoiceAnnouncer:
         self._first_announced_at = None
         self._cooldown_until = None
 
-    def update(self, now: float, event_confirmed: bool):
-        """상태를 한 단계 진행한다. 상태당 한 번만 처리하고 바로 반환한다."""
+    def update(self, now: float, event_confirmed: bool) -> Optional[str]:
+        """상태를 한 단계 진행한다. 상태당 한 번만 처리하고 바로 반환한다.
+
+        이번 호출에서 안내를 내보냈으면 "1차" 또는 "2차"를, 아니면 None을 반환한다.
+        """
         if self.state == STATE_COOLDOWN:
             if self._cooldown_until is not None and now >= self._cooldown_until:
                 self.state = STATE_IDLE
                 self._first_announced_at = None
                 self._cooldown_until = None
-            return  # 쿨다운 중에는 새 이벤트를 무시한다 (중복 방송 방지)
+            return None  # 쿨다운 중에는 새 이벤트를 무시한다 (중복 방송 방지)
 
         if self.state == STATE_IDLE:
             if event_confirmed:
                 self._announce(self.first_mp3, "1차")
                 self.state = STATE_FIRST_ANNOUNCED
                 self._first_announced_at = now
-            return
+                return "1차"
+            return None
 
         if self.state == STATE_FIRST_ANNOUNCED:
             elapsed = now - self._first_announced_at
             if elapsed < SECOND_ANNOUNCE_WINDOW_SEC:
-                return  # 아직 30초가 안 지났으면 대기만 한다
+                return None  # 아직 30초가 안 지났으면 대기만 한다
 
             # 30초가 지난 시점 — 그때도 여전히 흡연으로 확정 중이면 2차, 아니면 조용히 쿨다운
+            announced = None
             if event_confirmed:
                 self._announce(self.second_mp3, "2차")
+                announced = "2차"
             self._enter_cooldown(now)
+            return announced
+
+        return None
 
     def _announce(self, mp3_path: str, label: str):
+        if not self.play_audio:
+            return
         print(f"[{_ts()}] track {self.track_id}: {label} 안내 재생 — {mp3_path}")
         _play_async(mp3_path)
 
