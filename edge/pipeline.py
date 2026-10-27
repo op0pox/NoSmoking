@@ -22,9 +22,12 @@ from typing import Optional
 import numpy as np
 from ultralytics import YOLO
 
-from cigarette_detector import CIGARETTE_CLASS, SMOKE_CLASS, CigaretteDetector
+from cigarette_detector import CIGARETTE_CLASS, SMOKE_CLASS, CigaretteDetector, best_by_class
 from event_filter import EVENT_WINDOW_SEC, EventTimeFilter
-from motion_gate import MIN_PUFFS, STATE_SUSPECTED, SmokingMotionDetector, _ts
+from motion_gate import (
+    LEFT_SHOULDER, MIN_PUFFS, RIGHT_SHOULDER, STATE_SUSPECTED,
+    SmokingMotionDetector, _dist, _mouth_point, _point, _ts,
+)
 from voice_announcer import VoiceAnnouncer
 
 # ============================================================
@@ -58,6 +61,12 @@ CIG_SMOKE_COOCCURRENCE_WINDOW_SEC = 5.0  # 모션이 안 잡혀도, 담배와 �
                                           # 오검출될 수 있어 연기 단독보다는 신뢰도가 높지만, 담배를
                                           # 입에 무는 순간과 연기가 보이는 순간은 실제로도 약간의
                                           # 시차가 있을 수 있어 OBJECT_SIGNAL_HOLD_SEC보다 길게 잡는다.
+CIG_NEAR_MOUTH_DIST = 0.5      # cigarette 박스 중심과 입 추정 위치 사이 거리(어깨너비 배수)가 이 값 이하면
+                                # "입 근처 담배"로 본다. 2026-10-27 실측(v5): 흡연 영상의 검출은 61~84%가
+                                # 이 범위 안이었고, 물 마시는 영상의 물병 오검출은 3%뿐이었다(손 쪽에 몰림).
+MOUTH_CIG_CONF_THRESHOLD = 0.5  # 입 근처 담배가 이 신뢰도 이상이면 모션·연기 짝 없이도 그 프레임을
+                                 # "흡연"으로 판정한다(#39). 손을 입 근처에 계속 들고 피워 puff가 안 쌓이고,
+                                 # 연기도 잘 안 잡히는 경우를 위한 경로. 오탐은 위치 조건으로 막는다.
 
 # PipelineEvent.kind 값
 EVENT_CONFIRMED = "confirmed"   # 시간 필터가 미확정 → 확정으로 바뀐 순간
@@ -282,7 +291,9 @@ class SmokingPipeline:
         x1, y1, x2, y2 = person.box
         crop_x1, crop_y1 = max(0, int(x1)), max(0, int(y1))
         crop = frame[crop_y1:int(y2), crop_x1:int(x2)]
-        obj_result = self.cigarette_detector.detect(crop)
+        detections = self.cigarette_detector.detect_all(crop)
+        obj_result = best_by_class(detections)
+        mouth_cig_conf = self._mouth_cigarette_conf(detections, person.keypoints, crop_x1, crop_y1)
         cig_conf = obj_result[CIGARETTE_CLASS]["conf"]
         smoke_conf = obj_result[SMOKE_CLASS]["conf"]
         motion_score = min(detector.puff_count / MIN_PUFFS, 1.0)
@@ -338,9 +349,12 @@ class SmokingPipeline:
                     "box": (bx1 + crop_x1, by1 + crop_y1, bx2 + crop_x1, by2 + crop_y1),
                 })
 
-        self.object_scores[track_id] = {"cigarette": cig_conf, "smoke": smoke_conf, "combined": combined}
+        self.object_scores[track_id] = {
+            "cigarette": cig_conf, "smoke": smoke_conf, "combined": combined, "mouth_cig": mouth_cig_conf,
+        }
         self._log(
-            f"track {track_id}: 2차 확인 cig={cig_conf:.2f} smoke={smoke_conf:.2f} combined={combined:.2f}"
+            f"track {track_id}: 2차 확인 cig={cig_conf:.2f} smoke={smoke_conf:.2f} combined={combined:.2f} "
+            f"mouth_cig={mouth_cig_conf:.2f}"
         )
 
         # 시간 필터: 순간적인 오탐 프레임 하나로 이벤트가 확정되지 않도록
@@ -350,13 +364,37 @@ class SmokingPipeline:
             ef = EventTimeFilter(track_id)
             self.event_filters[track_id] = ef
         was_confirmed = ef.confirmed
-        ef.update(now, combined >= COMBINED_CONFIRM_THRESHOLD)
+        # 흡연 프레임 판정: 두 증거의 짝(combined) 또는 입 근처 담배 단독
+        is_smoking_frame = combined >= COMBINED_CONFIRM_THRESHOLD or mouth_cig_conf >= MOUTH_CIG_CONF_THRESHOLD
+        ef.update(now, is_smoking_frame)
         confirmed_now = ef.confirmed and not was_confirmed
         if confirmed_now:
             self._log(
                 f"track {track_id}: 🔔 이벤트 확정 (최근 {EVENT_WINDOW_SEC:.0f}s 판정 비율 {ef.last_ratio:.0%})"
             )
         return confirmed_now
+
+    def _mouth_cigarette_conf(self, detections: list, kpts: np.ndarray, crop_x1: int, crop_y1: int) -> float:
+        """입 추정 위치에서 CIG_NEAR_MOUTH_DIST 이내에 있는 cigarette 검출 중 최고 신뢰도를 반환한다.
+        얼굴·어깨가 안 보여 입 위치를 모르면 0.0 (판단할 수 없으면 증거로 치지 않는다 — 정밀도 우선)."""
+        mouth = _mouth_point(kpts)
+        l_sh, r_sh = _point(kpts, LEFT_SHOULDER), _point(kpts, RIGHT_SHOULDER)
+        if mouth is None or l_sh is None or r_sh is None:
+            return 0.0
+        shoulder_width = _dist(l_sh, r_sh)
+        if shoulder_width < 1e-3:
+            return 0.0
+
+        best = 0.0
+        for det in detections:
+            if det["class"] != CIGARETTE_CLASS:
+                continue
+            x1, y1, x2, y2 = det["box"]
+            # 박스는 크롭 좌표라 원본 프레임 좌표로 옮긴 뒤 입 위치와 비교한다
+            center = ((x1 + x2) / 2 + crop_x1, (y1 + y2) / 2 + crop_y1)
+            if _dist(center, mouth) / shoulder_width <= CIG_NEAR_MOUTH_DIST:
+                best = max(best, det["conf"])
+        return best
 
     def _drop_stale_tracks(self, now: float):
         """오래 안 보인 track은 상태를 폐기한다(메모리 누수 방지)."""

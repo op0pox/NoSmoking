@@ -137,7 +137,8 @@ def draw_status_badge(
     if object_info is not None:
         text += (
             f" 2nd(cig={object_info['cigarette']:.2f} "
-            f"smoke={object_info['smoke']:.2f} combined={object_info['combined']:.2f})"
+            f"smoke={object_info['smoke']:.2f} combined={object_info['combined']:.2f} "
+            f"mouth={object_info['mouth_cig']:.2f})"
         )
     if event_filter is not None:
         marker = "🔔EVENT" if event_filter.confirmed else ""
