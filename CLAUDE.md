@@ -57,7 +57,8 @@ FastAPI + SQLite(→PostgreSQL) → Streamlit 대시보드(시간대 히트맵, 
 | 엣지 가속 | Hailo SDK (.hef 컴파일) | 주력 경로. 플랜 B: NCNN/TFLite로 파이5 CPU-only 추론 (3주차에 벤치마크 선행) |
 | 음성 | 사전 녹음 mp3 재생 | 실시간 TTS 안 씀, 마이크 없음 |
 | 서버 | FastAPI + SQLite (개발) | POST /events, POST /heartbeat |
-| 대시보드 | Streamlit | React 아님 (범위 축소 결정) |
+| 대시보드 | Streamlit | 선택사항. 메타데이터만 표시 |
+| 웹 데모 화면 | React + FastAPI | localhost 전용 실시간 페이지 + 영상 분석 페이지. 영상 저장·외부 전송 없음, 업로드 영상은 처리 후 즉시 삭제 (docs/기능명세서.md 7장) |
 | 데이터 | Roboflow (클래스 2개: cigarette=0, smoke=1) | 연초·전자담배 기기는 cigarette로 통합, 연기·에어로졸은 smoke로 통합 (이슈 #1 기준). 저장소에 데이터셋 커밋 금지 |
 
 ## 저장소 구조
