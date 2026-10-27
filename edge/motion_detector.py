@@ -1,15 +1,14 @@
 """
-edge/motion_detector.py — 손-입 반복 모션(흡연 의심) 실시간 감지 프로토타입
+edge/motion_detector.py — 흡연 감지 실시간 실행 + 화면 표시
 
-1차 게이트 모듈. 담배 객체 감지(모델 2) 이전에, 포즈만으로
-"손이 입 근처로 반복해서 올라갔다 내려오는" 동작을 잡아 흡연 의심
-후보를 걸러낸다. 사람 감지는 YOLOv8n-pose 하나로 겸한다(별도 사람
-모델 없음). 영상·프레임을 디스크에 저장하는 코드는 없다(프로젝트 원칙).
+웹캠 또는 영상 파일을 입력으로 감지 파이프라인(edge/pipeline.py의
+SmokingPipeline)을 돌리고, 판정 상태를 OpenCV 창에 그려서 보여준다.
+영상·프레임을 디스크에 저장하는 코드는 없다(프로젝트 원칙).
 
-판정 로직은 SmokingMotionDetector 클래스로 분리되어 있어 나중에
-다른 파이프라인(edge 앱 전체, 담배 객체 모델과의 통합 등)에서
-`from motion_detector import SmokingMotionDetector` 로 재사용 가능하다.
-사람 1명당 인스턴스를 1개씩 만들어 쓴다.
+모듈 구성:
+- motion_gate.py: 1차 게이트(손-입 반복 모션, SmokingMotionDetector)
+- pipeline.py: 사람+포즈 → 1차 게이트 → 2차 확인 → 시간 필터 → 음성 안내
+- 이 파일: 입력 소스 선택, 화면 그리기, 키 조작
 
 macOS 참고사항
 --------------
@@ -30,96 +29,32 @@ from __future__ import annotations
 import argparse
 import os
 import time
-from collections import deque
 from typing import Optional
 
 import cv2
 import numpy as np
 import torch
-from ultralytics import YOLO
 
-from cigarette_detector import CIGARETTE_CLASS, SMOKE_CLASS, CigaretteDetector
+from cigarette_detector import CIGARETTE_CLASS, SMOKE_CLASS
 from event_filter import EVENT_WINDOW_SEC, EventTimeFilter
+from motion_gate import (
+    GRAPH_HISTORY_SEC,
+    LEFT_ANKLE, LEFT_EAR, LEFT_ELBOW, LEFT_EYE, LEFT_HIP, LEFT_KNEE, LEFT_SHOULDER, LEFT_WRIST,
+    NEAR_THRESHOLD, NOSE,
+    RIGHT_ANKLE, RIGHT_EAR, RIGHT_ELBOW, RIGHT_EYE, RIGHT_HIP, RIGHT_KNEE, RIGHT_SHOULDER, RIGHT_WRIST,
+    STATE_PUFF, STATE_SUSPECTED,
+    SmokingMotionDetector, _mouth_point, _point, _ts,
+)
+from pipeline import SmokingPipeline
 from voice_announcer import STATE_IDLE as ANNOUNCER_IDLE
 from voice_announcer import VoiceAnnouncer
 
 # ============================================================
-# 튜닝 상수 — 5주차·9주차 집중 튜닝 대상. 코드 다른 곳에 매직넘버로
-# 흩어놓지 말고 항상 여기에 모을 것.
+# 화면 표시 전용 상수 (판정에는 쓰이지 않음)
 # ============================================================
-NEAR_THRESHOLD = 0.6           # 손목-입(추정) 정규화 거리가 이 값 미만이면 "입 근처".
-                                # 주먹 쥔 자세는 0.35로도 충분하지만, 손가락 사이에 담배를
-                                # 끼우는 자세는 손목-입 사이에 손 길이만큼 실거리가 더 있어
-                                # 실측 정규화 거리가 0.44~0.6대로 나온다(2026-09-14 실측).
-                                # 1차 게이트(이 모듈)는 recall 우선으로 넉넉히 잡고,
-                                # 정밀도는 2차 담배 객체 감지 모델과 시간 필터에서 확보한다.
-MOUTH_OFFSET_RATIO = 0.08      # 입 keypoint가 없어 코 좌표를 기준점으로 쓰되, 실제 입은 코보다
-                                # 아래에 있으므로 어깨너비 대비 이 비율만큼 아래로 내려서 보정한다.
-                                # 값을 올리면 기준점이 더 아래(입에 가깝게)로 내려간다.
-MIN_HOLD_SEC = 1.0             # 이 시간 이상 유지되어야 puff(한 모금)로 인정
-MAX_HOLD_SEC = 6.0             # 이 시간을 넘기면 무효 처리(통화 등 장시간 접촉)
-WINDOW_SEC = 60.0              # puff를 세는 슬라이딩 윈도 길이
-MIN_PUFFS = 3                  # 윈도 안에서 이 횟수 이상이면 흡연 의심 확정
-
-KEYPOINT_CONF_THRESHOLD = 0.5  # 코·어깨 등 몸통 keypoint 판정에 쓰는 최소 신뢰도
-WRIST_CONF_THRESHOLD = 0.15    # 손목 keypoint 전용 임계값. 실측 결과 웹캠에서는 손을 활발히
-                                # 움직이는 중에도 손목 신뢰도가 0.5를 거의 못 넘는다(오른쪽 0.35~0.54,
-                                # 왼쪽 0.15~0.25 수준). 0.5를 그대로 쓰면 왼손처럼 신뢰도가 더 낮게
-                                # 나오는 쪽은 puff가 사실상 전혀 인정되지 않는다. 가만히 쉬는 손목은
-                                # 0.02~0.05대라 이 값으로도 움직임과는 충분히 구분된다.
 DRAW_CONF_THRESHOLD = 0.2      # 화면 표시 전용(판정 기준 아님). 판정 임계값보다 낮게 잡아
                                 # 손목이 얼굴 근처에서 신뢰도가 떨어져도 디버깅용으로 위치를 보여준다.
-POSE_LOST_GRACE_SEC = 0.5      # 사람 전체가 잠깐 트래킹을 놓쳐도 진행 중인 puff를 바로 리셋하지 않는 유예시간
-WRIST_OCCLUSION_GRACE_SEC = 3.0  # 코/어깨는 보이는데 양쪽 손목만 안 보이는 경우의 유예시간.
-                                  # 손이 얼굴을 가리면 포즈 모델이 손목 신뢰도를 낮게 주는 경우가 많아
-                                  # (바로 흡연 의심 동작 중일 때) POSE_LOST_GRACE_SEC보다 훨씬 길게 잡는다.
-                                  # 최종 유지시간이 MAX_HOLD_SEC을 넘으면 어차피 무효 처리되므로
-                                  # 길게 잡아도 오탐 위험은 없다.
-NEAR_EXIT_GRACE_SEC = 0.3      # 손이 멀어진 것으로 판정된 프레임이 이 시간 이상 유지되어야 puff 종료로 인정
-                                # (포즈 추정 노이즈로 거리값이 한두 프레임 튀는 것 방지)
-STALE_TRACK_TIMEOUT_SEC = 5.0  # 이 시간 이상 화면에서 안 보이면 해당 track 상태를 폐기
-
-# 2차 확인(담배/연기 객체 감지) 관련
-OBJECT_CHECK_INTERVAL_SEC = 1.0  # SUSPECTED가 아닌 사람도 이 주기로 2차 확인을 돌린다(SUSPECTED면
-                                  # 매 프레임). 모션 3회를 다 채우지 못해도 담배/연기가 여러 프레임에
-                                  # 걸쳐 보이면 잡을 기회를 주되, 상시 실행은 피해서 연산을 아낀다.
-COMBINED_CONFIRM_THRESHOLD = 0.5  # combined 점수가 이 값 이상인 프레임을 "이 프레임은 흡연"으로 판정
-                                    # (event_filter.EventTimeFilter의 10초 윈도 입력값이 됨)
-OBJECT_SIGNAL_HOLD_SEC = 1.5   # cig/smoke 신뢰도가 이번 프레임에 0이어도, 이 시간 이내에 마지막으로
-                                # 감지된 값이 있으면 그 값을 페어링에 대신 쓴다. 객체 감지가 프레임마다
-                                # 깜빡이는 걸(있다가 없다가) 완화하지 않으면, 연관 점수(_pair_score)가
-                                # 매번 정확히 같은 프레임에 두 신호가 겹쳐야만 해서 모션이 최고조여도
-                                # 자꾸 0으로 끊겨버린다(실측으로 확인함).
-HIGH_CONFIDENCE_THRESHOLD = 0.75  # cig_conf 또는 smoke_conf가 이 값 이상이면 짝(모션/다른 클래스)
-                                    # 없이도 combined 후보가 된다 — 단, 아래 두 조건을 같이 만족해야 한다.
-                                    # 실측 결과 v2 모델은 배경 물체를 0.88로도 오인하므로 단일 프레임
-                                    # 신뢰도만으로는 안전하지 않다.
-HIGH_CONF_MIN_PUFFS = 2            # 고신뢰도 바이패스를 쓰려면 최소 이 횟수 이상 puff가 쌓여 있어야 한다
-                                    # (모션이 전혀 없는 상태에서 객체 오검출 하나로 확정되는 걸 막는다).
-HIGH_CONF_SUSTAIN_WINDOW_SEC = 10.0  # 고신뢰도 검출이 지속되는지 보는 시간 창
-HIGH_CONF_SUSTAIN_COUNT = 2        # 이 창 안에 고신뢰도 검출이 이 횟수 이상 있어야 바이패스 인정
-                                    # (순간 오검출 한 번으로는 통과 못 함, 진짜 흡연은 몇 초간 계속 보인다).
-CIG_SMOKE_COOCCURRENCE_WINDOW_SEC = 5.0  # 모션이 안 잡혀도, 담배와 연기가 "정확히 같은 프레임"이
-                                          # 아니라 이 시간 이내에만 각각 감지됐으면 서로 짝으로
-                                          # 인정한다. 연기는 담배 연기가 아니어도(김·안개·수증기)
-                                          # 오검출될 수 있어 연기 단독보다는 신뢰도가 높지만, 담배를
-                                          # 입에 무는 순간과 연기가 보이는 순간은 실제로도 약간의
-                                          # 시차가 있을 수 있어 OBJECT_SIGNAL_HOLD_SEC보다 길게 잡는다.
-
-GRAPH_HISTORY_SEC = 60.0       # 하단 그래프에 표시할 과거 구간 길이
 GRAPH_HEIGHT_PX = 140          # 하단 그래프 영역 높이(px)
-
-# COCO 17 keypoints 인덱스 (YOLOv8-pose 순서). 입 keypoint가 없어
-# 코(nose) 좌표를 MOUTH_OFFSET_RATIO만큼 아래로 보정해 입 대용으로 쓴다.
-NOSE = 0
-LEFT_EYE, RIGHT_EYE = 1, 2
-LEFT_EAR, RIGHT_EAR = 3, 4
-LEFT_SHOULDER, RIGHT_SHOULDER = 5, 6
-LEFT_ELBOW, RIGHT_ELBOW = 7, 8
-LEFT_WRIST, RIGHT_WRIST = 9, 10
-LEFT_HIP, RIGHT_HIP = 11, 12
-LEFT_KNEE, RIGHT_KNEE = 13, 14
-LEFT_ANKLE, RIGHT_ANKLE = 15, 16
 
 SKELETON_EDGES = [
     (LEFT_ANKLE, LEFT_KNEE), (LEFT_KNEE, LEFT_HIP),
@@ -134,10 +69,6 @@ SKELETON_EDGES = [
     (LEFT_SHOULDER, LEFT_EAR), (RIGHT_SHOULDER, RIGHT_EAR),
 ]
 
-STATE_IDLE = "IDLE"
-STATE_PUFF = "PUFF"
-STATE_SUSPECTED = "SMOKING_SUSPECTED"
-
 PALETTE = [
     (66, 135, 245), (66, 245, 173), (245, 66, 230), (245, 173, 66),
     (173, 66, 245), (80, 220, 80), (60, 60, 245), (66, 200, 245),
@@ -148,229 +79,6 @@ OBJECT_BOX_COLORS = {
     CIGARETTE_CLASS: (0, 0, 255),    # 빨강
     SMOKE_CLASS: (255, 160, 0),      # 파랑 계열
 }
-
-
-def _ts() -> str:
-    return time.strftime("%H:%M:%S")
-
-
-def _point(kpts: np.ndarray, idx: int, conf_th: float = KEYPOINT_CONF_THRESHOLD):
-    """keypoint 배열에서 신뢰도를 통과한 (x, y) 좌표만 반환, 아니면 None."""
-    x, y, c = kpts[idx]
-    if c < conf_th:
-        return None
-    return float(x), float(y)
-
-
-def _dist(p1, p2) -> float:
-    return float(np.hypot(p1[0] - p2[0], p1[1] - p2[1]))
-
-
-def _mouth_point(kpts: np.ndarray, conf_th: float = KEYPOINT_CONF_THRESHOLD):
-    """코·어깨 keypoint로부터 입 추정 위치(코에서 아래로 보정)를 반환. 실패 시 None."""
-    nose = _point(kpts, NOSE, conf_th)
-    l_sh = _point(kpts, LEFT_SHOULDER, conf_th)
-    r_sh = _point(kpts, RIGHT_SHOULDER, conf_th)
-    if nose is None or l_sh is None or r_sh is None:
-        return None
-    shoulder_width = _dist(l_sh, r_sh)
-    return nose[0], nose[1] + MOUTH_OFFSET_RATIO * shoulder_width
-
-
-def _pair_score(a: float, b: float) -> float:
-    """두 신호(0~1)의 기하평균. 하나라도 0이면 0 —
-    단일 신호(담배만, 모션만 등)만으로는 점수가 오르지 않고, 두 증거가
-    같이 있어야 확정에 가까워지도록 한다."""
-    if a <= 0 or b <= 0:
-        return 0.0
-    return (a * b) ** 0.5
-
-
-def _held_conf(
-    hold_store: dict, track_id: int, cls_name: str, raw_conf: float, now: float, hold_sec: float
-) -> float:
-    """raw_conf가 0보다 크면 그 값을 최신 기준으로 기록하고 그대로 반환한다.
-    raw_conf가 0이면 hold_sec 이내에 마지막으로 감지된 값이 있으면 그 값을
-    대신 반환한다(_pair_score 계산용 — 프레임마다 깜빡이는 객체 감지 노이즈
-    완화). 그 시간도 지났으면 0.0.
-
-    hold_sec은 호출하는 쪽이 상황에 맞게 넘긴다 — 예를 들어 모션과 짝지을
-    때는 짧게(OBJECT_SIGNAL_HOLD_SEC), 담배·연기끼리 짝지을 때는 "동시가
-    아니어도 됨"을 반영해 더 길게(CIG_SMOKE_COOCCURRENCE_WINDOW_SEC) 쓴다.
-    """
-    person_hold = hold_store.setdefault(track_id, {})
-    if raw_conf > 0:
-        person_hold[cls_name] = (raw_conf, now)
-        return raw_conf
-    entry = person_hold.get(cls_name)
-    if entry is not None:
-        held_conf, held_time = entry
-        if now - held_time <= hold_sec:
-            return held_conf
-    return 0.0
-
-
-def _record_high_conf_hit(hits_store: dict, track_id: int, now: float, is_high: bool) -> int:
-    """고신뢰도 검출 시각을 기록하고, HIGH_CONF_SUSTAIN_WINDOW_SEC 창 안의 검출 횟수를 반환한다.
-    is_high가 False면 기록 없이 창만 정리해서 횟수를 돌려준다."""
-    hits = hits_store.setdefault(track_id, deque())
-    if is_high:
-        hits.append(now)
-    while hits and now - hits[0] > HIGH_CONF_SUSTAIN_WINDOW_SEC:
-        hits.popleft()
-    return len(hits)
-
-
-# ============================================================
-# 판정 로직 (다른 파이프라인에서 import해서 재사용)
-# ============================================================
-class SmokingMotionDetector:
-    """사람 1명에 대한 "손-입 반복 모션" 상태 머신.
-
-    프레임마다 update(now, keypoints)를 호출하면 내부적으로 puff(한 모금)
-    판정과 SMOKING_SUSPECTED 판정을 갱신한다. 사람 추적(track id)별로
-    인스턴스를 하나씩 만들어 쓴다.
-    """
-
-    def __init__(self, track_id: int):
-        self.track_id = track_id
-        self.state = STATE_IDLE
-
-        self._near_start_time: Optional[float] = None
-        self._far_start_time: Optional[float] = None
-        self._last_valid_pose_time: Optional[float] = None
-        self._puff_timestamps: deque = deque()
-
-        self.last_dist: Optional[float] = None
-        self.last_seen_time: float = time.monotonic()
-        self.puff_count: int = 0
-
-        # 하단 그래프용 (timestamp, normalized_dist) 이력
-        self.history: deque = deque()
-
-    def reset(self):
-        was_suspected = self.state == STATE_SUSPECTED
-        self._near_start_time = None
-        self._far_start_time = None
-        self._last_valid_pose_time = None
-        self._puff_timestamps.clear()
-        self.last_dist = None
-        self.puff_count = 0
-        self.history.clear()
-        self.state = STATE_IDLE
-        if was_suspected:
-            print(f"[{_ts()}] track {self.track_id}: SMOKING_SUSPECTED 해제 (수동 리셋)")
-
-    def update(self, now: float, keypoints: Optional[np.ndarray]) -> str:
-        """한 프레임 분량의 keypoints로 상태를 갱신하고 현재 상태 문자열을 반환한다.
-
-        keypoints: (17, 3) array [x, y, conf], 탐지 실패 시 None.
-        """
-        if keypoints is not None:
-            self.last_seen_time = now
-
-        normalized, wrists_occluded = (
-            self._compute_normalized_dist(keypoints) if keypoints is not None else (None, False)
-        )
-
-        if normalized is not None:
-            self._last_valid_pose_time = now
-            self.last_dist = normalized
-            self.history.append((now, normalized))
-
-            if normalized < NEAR_THRESHOLD:
-                if self._near_start_time is None:
-                    self._near_start_time = now
-                self._far_start_time = None  # 다시 가까워졌으니 이탈 타이머 취소
-            elif self._near_start_time is not None:
-                # 거리값이 한두 프레임 튀는 노이즈일 수 있으니 곧바로 종료하지 않고
-                # NEAR_EXIT_GRACE_SEC 동안 실제로 멀어진 상태가 유지되는지 확인한다
-                if self._far_start_time is None:
-                    self._far_start_time = now
-                elif now - self._far_start_time >= NEAR_EXIT_GRACE_SEC:
-                    # 유예 만료 시점(now)이 아니라 실제로 멀어지기 시작한 시점을 종료 시각으로 쓴다
-                    self._resolve_near_period(self._far_start_time)
-                    self._far_start_time = None
-        else:
-            # 포즈 실패/저신뢰도 프레임: 유예시간 안이면 진행 중이던 puff를 그대로 둔다.
-            # 손목만 안 보이는 경우(손이 얼굴을 가려서)는 훨씬 긴 유예를 준다 —
-            # 바로 흡연 의심 동작이 진행 중일 가능성이 가장 높은 순간이기 때문이다.
-            grace = WRIST_OCCLUSION_GRACE_SEC if wrists_occluded else POSE_LOST_GRACE_SEC
-            if (
-                self._near_start_time is not None
-                and self._last_valid_pose_time is not None
-                and now - self._last_valid_pose_time > grace
-            ):
-                self._near_start_time = None
-                self._far_start_time = None
-
-        self._purge_old_puffs(now)
-        self._update_state(now)
-
-        while self.history and now - self.history[0][0] > GRAPH_HISTORY_SEC:
-            self.history.popleft()
-
-        return self.state
-
-    def _compute_normalized_dist(self, kpts: np.ndarray) -> tuple:
-        """정규화 거리를 계산한다. (normalized, wrists_occluded)를 반환한다.
-
-        wrists_occluded는 코·어깨는 보이는데 양쪽 손목만 신뢰도가 낮은 경우 True다.
-        손이 얼굴 근처(=우리가 가장 판정하고 싶은 순간)로 갈수록 이 상태가 되기 쉬우므로
-        update()에서 별도의 긴 유예시간(WRIST_OCCLUSION_GRACE_SEC)을 적용하기 위해 구분한다.
-        """
-        l_sh = _point(kpts, LEFT_SHOULDER)
-        r_sh = _point(kpts, RIGHT_SHOULDER)
-        mouth = _mouth_point(kpts)
-        if mouth is None or l_sh is None or r_sh is None:
-            return None, False
-
-        shoulder_width = _dist(l_sh, r_sh)
-        if shoulder_width < 1e-3:
-            return None, False
-
-        candidates = []
-        l_wr = _point(kpts, LEFT_WRIST, WRIST_CONF_THRESHOLD)
-        r_wr = _point(kpts, RIGHT_WRIST, WRIST_CONF_THRESHOLD)
-        if l_wr is not None:
-            candidates.append(_dist(l_wr, mouth) / shoulder_width)
-        if r_wr is not None:
-            candidates.append(_dist(r_wr, mouth) / shoulder_width)
-
-        if not candidates:
-            return None, True
-        return min(candidates), False
-
-    def _resolve_near_period(self, now: float):
-        """손이 입 근처에서 멀어졌을 때, 유지 시간을 보고 puff 인정 여부를 결정한다."""
-        if self._near_start_time is None:
-            return
-        hold = now - self._near_start_time
-        self._near_start_time = None
-        if MIN_HOLD_SEC <= hold <= MAX_HOLD_SEC:
-            self._puff_timestamps.append(now)
-            self.puff_count += 1
-            print(f"[{_ts()}] track {self.track_id}: puff #{self.puff_count} 인정 (유지 {hold:.2f}s)")
-
-    def _purge_old_puffs(self, now: float):
-        while self._puff_timestamps and now - self._puff_timestamps[0] > WINDOW_SEC:
-            self._puff_timestamps.popleft()
-
-    def _update_state(self, now: float):
-        should_suspect = len(self._puff_timestamps) >= MIN_PUFFS
-
-        if should_suspect and self.state != STATE_SUSPECTED:
-            self.state = STATE_SUSPECTED
-            print(
-                f"[{_ts()}] track {self.track_id}: SMOKING_SUSPECTED 진입 "
-                f"(최근 {WINDOW_SEC:.0f}s 내 puff {len(self._puff_timestamps)}회)"
-            )
-        elif not should_suspect and self.state == STATE_SUSPECTED:
-            print(f"[{_ts()}] track {self.track_id}: SMOKING_SUSPECTED 해제")
-            self.state = STATE_IDLE
-
-        if self.state != STATE_SUSPECTED:
-            self.state = STATE_PUFF if self._near_start_time is not None else STATE_IDLE
 
 
 # ============================================================
@@ -510,7 +218,8 @@ def main():
     parser.add_argument("--model", type=str, default="yolov8n-pose.pt", help="YOLOv8-pose 가중치 경로/이름")
     parser.add_argument(
         "--cigarette-model", type=str, default="cigarette-v5-best.pt",
-        help="담배/연기 2차 확인 모델 가중치 경로. SMOKING_SUSPECTED인 사람에 대해서만 사용된다.",
+        help="담배/연기 2차 확인 모델 가중치 경로. SMOKING_SUSPECTED인 사람은 매 프레임, "
+             "그 외는 1초 주기로 사용된다.",
     )
     parser.add_argument(
         "--first-mp3", type=str, default="assets/audio/first_announce.mp3",
@@ -531,8 +240,10 @@ def main():
     device = select_device()
     print(f"[정보] 추론 디바이스: {device}")
 
-    model = YOLO(args.model)
-    cigarette_detector = CigaretteDetector(args.cigarette_model, device=device)
+    pipeline = SmokingPipeline(
+        args.model, args.cigarette_model, device=device, pose_imgsz=args.pose_imgsz,
+        first_mp3=args.first_mp3, second_mp3=args.second_mp3,
+    )
 
     for label, path in (("1차", args.first_mp3), ("2차", args.second_mp3)):
         if not os.path.isfile(path):
@@ -563,14 +274,6 @@ def main():
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         video_fps = cap.get(cv2.CAP_PROP_FPS)
         print(f"[정보] 영상 파일 사용 중: {args.source} ({width}x{height}, {video_fps:.1f}fps)")
-
-    detectors: dict = {}
-    object_scores: dict = {}  # track_id -> {"cigarette", "smoke", "combined"} (2차 확인 돈 프레임에만 갱신)
-    event_filters: dict = {}  # track_id -> EventTimeFilter (2차 확인 돈 프레임에만 갱신)
-    announcers: dict = {}     # track_id -> VoiceAnnouncer (매 프레임 갱신 — 쿨다운 타임아웃은 시간이 지나면 진행돼야 함)
-    last_object_check: dict = {}  # track_id -> 마지막으로 2차 확인을 돌린 시각 (주기 실행용)
-    object_signal_hold: dict = {}  # track_id -> {클래스명: (conf, 감지시각)} (_held_conf용)
-    high_conf_hits: dict = {}  # track_id -> 고신뢰도 검출 시각 deque (지속성 판정용)
 
     window_name = "NoSmoking motion_detector  (q: 종료 / r: 리셋)"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -610,196 +313,34 @@ def main():
             # 영상 자체의 재생 위치(ms)를 시간 기준으로 쓴다. 웹캠은 그대로 실시간(wall clock).
             now = time.monotonic() if is_webcam else cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
 
-            try:
-                # tracker를 명시하지 않으면 ultralytics 버전에 따라 new_track_thresh가
-                # 매우 높은 트래커가 기본값이 되어(예: 0.7) 웹캠의 일반적인 포즈 신뢰도로는
-                # track id가 영영 배정되지 않을 수 있다. bytetrack은 임계값이 낮고(0.25)
-                # 가벼워서 명시적으로 고정한다.
-                results = model.track(
-                    frame, persist=True, verbose=False, device=device, tracker="bytetrack.yaml",
-                    imgsz=args.pose_imgsz,
+            # 판정을 모든 사람에 대해 먼저 끝낸 뒤에 그린다 — 그리면서 판정하면
+            # 앞사람의 박스·스켈레톤이 뒷사람의 2차 확인 크롭에 섞여 들어간다.
+            result = pipeline.process(frame, now)
+
+            for person in result.persons:
+                track_id = person.track_id
+                draw_object_boxes(frame, person.object_boxes)
+                color = _color_for_track(track_id)
+                draw_skeleton(frame, person.keypoints, color)
+                draw_wrist_nose_lines(frame, person.keypoints)
+                draw_status_badge(
+                    frame, person.keypoints, person.detector, pipeline.object_scores.get(track_id),
+                    pipeline.event_filters.get(track_id), pipeline.announcers.get(track_id),
                 )
-            except Exception as e:  # mps에서 특정 연산이 미지원일 때 cpu로 폴백
-                if device != "cpu":
-                    print(f"[경고] {device} 추론 실패({e}) — cpu로 폴백합니다.")
-                    device = "cpu"
-                    cigarette_detector.device = device
-                    results = model.track(
-                        frame, persist=True, verbose=False, device=device, tracker="bytetrack.yaml",
-                        imgsz=args.pose_imgsz,
-                    )
-                else:
-                    raise
-
-            result = results[0]
-            seen_ids = set()
-
-            if result.keypoints is not None and result.boxes is not None and result.boxes.id is not None:
-                kpts_all = result.keypoints.data.cpu().numpy()  # (N, 17, 3)
-                ids = result.boxes.id.cpu().numpy().astype(int)
-                boxes_xyxy = result.boxes.xyxy.cpu().numpy()  # (N, 4) — kpts_all/ids와 같은 순서
-
-                for kpts, track_id, box in zip(kpts_all, ids, boxes_xyxy):
-                    track_id = int(track_id)
-                    seen_ids.add(track_id)
-
-                    detector = detectors.get(track_id)
-                    if detector is None:
-                        detector = SmokingMotionDetector(track_id)
-                        detectors[track_id] = detector
-
-                    detector.update(now, kpts)
-
-                    # 2차 확인: 상시 실행은 아니지만 SUSPECTED만 기다리지도 않는다.
-                    # SUSPECTED면 매 프레임, 아니어도 사람이 있는 한 OBJECT_CHECK_INTERVAL_SEC
-                    # 주기로 체크한다 — 모션 3회를 다 못 채워도 담배/연기가 여러 프레임에
-                    # 걸쳐 보이면 잡을 기회를 준다.
-                    last_check = last_object_check.get(track_id)
-                    should_check_object = (
-                        detector.state == STATE_SUSPECTED
-                        or last_check is None
-                        or now - last_check >= OBJECT_CHECK_INTERVAL_SEC
-                    )
-                    if should_check_object:
-                        last_object_check[track_id] = now
-                        x1, y1, x2, y2 = box
-                        crop_x1, crop_y1 = max(0, int(x1)), max(0, int(y1))
-                        crop = frame[crop_y1:int(y2), crop_x1:int(x2)]
-                        obj_result = cigarette_detector.detect(crop)
-                        cig_conf = obj_result[CIGARETTE_CLASS]["conf"]
-                        smoke_conf = obj_result[SMOKE_CLASS]["conf"]
-                        motion_score = min(detector.puff_count / MIN_PUFFS, 1.0)
-
-                        # 연관 기반 점수: 두 증거가 같이 있어야 점수가 오른다.
-                        # 단일 신호(담배만/연기만/모션만)로는 combined가 0에 가깝다.
-                        # 화면 표시·로그에는 raw 값(cig_conf/smoke_conf)을 그대로 쓴다.
-                        #
-                        # 모션과 짝지을 때는 짧은 유예(OBJECT_SIGNAL_HOLD_SEC)만 써서 프레임 단위
-                        # 깜빡임만 완화한다. 담배·연기끼리 짝지을 때는 더 긴 유예
-                        # (CIG_SMOKE_COOCCURRENCE_WINDOW_SEC)를 써서 "정확히 같은 프레임"이
-                        # 아니어도 인정한다 — 연기는 담배 연기가 아니어도(김·안개·수증기)
-                        # 오검출될 수 있어 연기 단독보다 신뢰도가 높은 담배와 짝지어서 검증한다.
-                        held_cig_short = _held_conf(
-                            object_signal_hold, track_id, CIGARETTE_CLASS, cig_conf, now, OBJECT_SIGNAL_HOLD_SEC
-                        )
-                        held_smoke_short = _held_conf(
-                            object_signal_hold, track_id, SMOKE_CLASS, smoke_conf, now, OBJECT_SIGNAL_HOLD_SEC
-                        )
-                        held_cig_long = _held_conf(
-                            object_signal_hold, track_id, CIGARETTE_CLASS, cig_conf, now,
-                            CIG_SMOKE_COOCCURRENCE_WINDOW_SEC,
-                        )
-                        held_smoke_long = _held_conf(
-                            object_signal_hold, track_id, SMOKE_CLASS, smoke_conf, now,
-                            CIG_SMOKE_COOCCURRENCE_WINDOW_SEC,
-                        )
-
-                        # 아주 확실한 단일 검출(raw 값 기준, held 아님)은 짝 없이도 인정한다 —
-                        # 단, 지속성(창 안 여러 번)과 최소 모션(puff 누적)을 같이 만족해야 한다.
-                        # 순간 오검출 한 번이나 모션 없는 상태의 오검출은 이 경로로 확정되지 않는다.
-                        raw_high = max(cig_conf, smoke_conf) >= HIGH_CONFIDENCE_THRESHOLD
-                        high_hits = _record_high_conf_hit(high_conf_hits, track_id, now, raw_high)
-                        high_conf_bypass = 0.0
-                        if (
-                            raw_high
-                            and detector.puff_count >= HIGH_CONF_MIN_PUFFS
-                            and high_hits >= HIGH_CONF_SUSTAIN_COUNT
-                        ):
-                            high_conf_bypass = max(
-                                cig_conf if cig_conf >= HIGH_CONFIDENCE_THRESHOLD else 0.0,
-                                smoke_conf if smoke_conf >= HIGH_CONFIDENCE_THRESHOLD else 0.0,
-                            )
-                        combined = max(
-                            _pair_score(held_cig_long, held_smoke_long),
-                            _pair_score(held_cig_short, motion_score),
-                            _pair_score(held_smoke_short, motion_score),
-                            high_conf_bypass,
-                        )
-
-                        # 크롭 좌표 -> 원본 프레임 좌표로 변환해서 검출된 프레임에만 박스로 표시
-                        # (잔상 유지 없음 — 이번 프레임에 실제로 검출된 것만 그린다)
-                        boxes_this_frame = []
-                        for cls_name, det_info in obj_result.items():
-                            if det_info["box"] is not None:
-                                bx1, by1, bx2, by2 = det_info["box"]
-                                boxes_this_frame.append({
-                                    "class": cls_name,
-                                    "conf": det_info["conf"],
-                                    "box": (bx1 + crop_x1, by1 + crop_y1, bx2 + crop_x1, by2 + crop_y1),
-                                })
-                        draw_object_boxes(frame, boxes_this_frame)
-
-                        object_scores[track_id] = {
-                            "cigarette": cig_conf, "smoke": smoke_conf, "combined": combined,
-                        }
-                        print(
-                            f"[{_ts()}] track {track_id}: 2차 확인 "
-                            f"cig={cig_conf:.2f} smoke={smoke_conf:.2f} "
-                            f"combined={combined:.2f}"
-                        )
-
-                        # 시간 필터: 순간적인 오탐 프레임 하나로 이벤트가 확정되지 않도록
-                        # 최근 10초 윈도 내 판정 비율(60%)을 본다
-                        ef = event_filters.get(track_id)
-                        if ef is None:
-                            ef = EventTimeFilter(track_id)
-                            event_filters[track_id] = ef
-                        was_confirmed = ef.confirmed
-                        is_smoking_frame = combined >= COMBINED_CONFIRM_THRESHOLD
-                        ef.update(now, is_smoking_frame)
-                        if ef.confirmed and not was_confirmed:
-                            print(
-                                f"[{_ts()}] track {track_id}: 🔔 이벤트 확정 "
-                                f"(최근 {EVENT_WINDOW_SEC:.0f}s 판정 비율 {ef.last_ratio:.0%})"
-                            )
-
-                    color = _color_for_track(track_id)
-                    draw_skeleton(frame, kpts, color)
-                    draw_wrist_nose_lines(frame, kpts)
-                    draw_status_badge(
-                        frame, kpts, detector, object_scores.get(track_id),
-                        event_filters.get(track_id), announcers.get(track_id),
-                    )
-
-            # 이번 프레임에 안 보인 track에도 update(None)을 줘서 유예시간 로직이 돌게 한다
-            for track_id, detector in detectors.items():
-                if track_id not in seen_ids:
-                    detector.update(now, None)
-
-            # 음성 안내 상태 머신은 화면에 안 보이는 사람에 대해서도 매 프레임 진행시켜야
-            # 30초 대기·쿨다운 타이머가 실제 시간에 맞춰 흘러간다
-            for track_id in detectors:
-                announcer = announcers.get(track_id)
-                if announcer is None:
-                    announcer = VoiceAnnouncer(track_id, args.first_mp3, args.second_mp3)
-                    announcers[track_id] = announcer
-                ef = event_filters.get(track_id)
-                announcer.update(now, ef.confirmed if ef is not None else False)
-
-            # 오래 안 보인 track은 상태를 폐기(메모리 누수 방지)
-            stale_ids = [tid for tid, d in detectors.items() if now - d.last_seen_time > STALE_TRACK_TIMEOUT_SEC]
-            for tid in stale_ids:
-                del detectors[tid]
-                object_scores.pop(tid, None)
-                event_filters.pop(tid, None)
-                announcers.pop(tid, None)
-                last_object_check.pop(tid, None)
-                object_signal_hold.pop(tid, None)
-                high_conf_hits.pop(tid, None)
 
             dt = now - prev_time
             prev_time = now
             if dt > 0:
                 fps = fps * 0.9 + (1.0 / dt) * 0.1
 
-            total_puffs = sum(d.puff_count for d in detectors.values())
+            total_puffs = sum(d.puff_count for d in pipeline.detectors.values())
             cv2.putText(
                 frame,
-                f"FPS: {fps:.1f}  people: {len(detectors)}  puffs(total): {total_puffs}",
+                f"FPS: {fps:.1f}  people: {len(pipeline.detectors)}  puffs(total): {total_puffs}",
                 (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv2.LINE_AA,
             )
 
-            graph_panel = draw_graph_panel(frame.shape[1], GRAPH_HEIGHT_PX, detectors, now)
+            graph_panel = draw_graph_panel(frame.shape[1], GRAPH_HEIGHT_PX, pipeline.detectors, now)
             canvas = np.vstack([frame, graph_panel])
 
             cv2.imshow(window_name, canvas)
@@ -810,22 +351,14 @@ def main():
                 break
             elif key == ord("r"):
                 print(f"[{_ts()}] 전체 상태 리셋")
-                for d in detectors.values():
-                    d.reset()
-                detectors.clear()
-                object_scores.clear()
-                event_filters.clear()
-                announcers.clear()
-                last_object_check.clear()
-                object_signal_hold.clear()
-                high_conf_hits.clear()
+                pipeline.reset()
 
         if not is_webcam:
             print(f"\n[정보] 결과 요약 — {args.source}")
-            if not detectors:
+            if not pipeline.detectors:
                 print("  감지된 사람 없음")
-            for tid, d in detectors.items():
-                ef = event_filters.get(tid)
+            for tid, d in pipeline.detectors.items():
+                ef = pipeline.event_filters.get(tid)
                 event_label = "EVENT 확정" if ef is not None and ef.confirmed else "미확정"
                 print(f"  track {tid}: 최종 상태={d.state} puff={d.puff_count} 이벤트={event_label}")
 
