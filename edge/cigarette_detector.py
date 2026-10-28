@@ -39,23 +39,42 @@ class CigaretteDetector:
         box는 crop 기준 픽셀 좌표(정수). 검출이 없거나 crop이 비어 있으면
         conf=0.0, box=None.
         """
-        result = {
-            CIGARETTE_CLASS: {"conf": 0.0, "box": None},
-            SMOKE_CLASS: {"conf": 0.0, "box": None},
-        }
+        return best_by_class(self.detect_all(crop))
+
+    def detect_all(self, crop: np.ndarray) -> list:
+        """crop에서 검출된 cigarette/smoke 박스를 전부 반환한다.
+
+        반환: [{"class": "cigarette" | "smoke", "conf": float, "box": (x1, y1, x2, y2)}, ...]
+        box는 crop 기준 픽셀 좌표(정수). 검출 위치를 따져야 할 때(예: 입 근처 담배만
+        인정) 쓴다 — 클래스별 최고 신뢰도 박스 하나만 보면, 손에 든 물병 오검출(0.88)이
+        입에 문 담배(0.6)를 가려 버릴 수 있다.
+        """
         if crop is None or crop.size == 0:
-            return result
+            return []
 
         results = self.model.predict(crop, verbose=False, device=self.device)
         boxes = results[0].boxes
         if boxes is None or len(boxes) == 0:
-            return result
+            return []
 
+        detections = []
         for cls_id, conf, xyxy in zip(
             boxes.cls.cpu().numpy(), boxes.conf.cpu().numpy(), boxes.xyxy.cpu().numpy()
         ):
             name = self.model.names[int(cls_id)]
-            if name in result and conf > result[name]["conf"]:
+            if name in (CIGARETTE_CLASS, SMOKE_CLASS):
                 x1, y1, x2, y2 = xyxy.astype(int).tolist()
-                result[name] = {"conf": float(conf), "box": (x1, y1, x2, y2)}
-        return result
+                detections.append({"class": name, "conf": float(conf), "box": (x1, y1, x2, y2)})
+        return detections
+
+
+def best_by_class(detections: list) -> dict:
+    """detect_all() 결과에서 클래스별 최고 신뢰도 검출만 골라 detect()와 같은 형식으로 반환한다."""
+    result = {
+        CIGARETTE_CLASS: {"conf": 0.0, "box": None},
+        SMOKE_CLASS: {"conf": 0.0, "box": None},
+    }
+    for det in detections:
+        if det["conf"] > result[det["class"]]["conf"]:
+            result[det["class"]] = {"conf": det["conf"], "box": det["box"]}
+    return result
