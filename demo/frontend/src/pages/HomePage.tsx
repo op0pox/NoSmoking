@@ -13,7 +13,7 @@ export default function HomePage() {
 
   return (
     <>
-      <h1>교내 금연구역 흡연 계도 시스템</h1>
+      <h1 className="brand-title">🚭 교내 금연구역 흡연 계도 시스템</h1>
       <p className="secondary">
         카메라 영상에서 흡연 행동을 감지하면 안내 음성으로 계도합니다. 사람을 식별하거나 단속하지 않습니다.
       </p>
