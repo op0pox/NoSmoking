@@ -36,7 +36,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-import cv2
 import torch
 
 # edge/ 모듈은 서로를 `from pipeline import ...`처럼 폴더 안 기준으로 import하므로,
@@ -48,7 +47,8 @@ import event_filter  # noqa: E402
 import motion_gate  # noqa: E402
 import pipeline  # noqa: E402
 import voice_announcer  # noqa: E402
-from pipeline import EVENT_ANNOUNCED, EVENT_CONFIRMED, SmokingPipeline  # noqa: E402
+from pipeline import SmokingPipeline  # noqa: E402
+from video_analysis import analyze_video  # noqa: E402
 
 # --set으로 상수를 바꿀 수 있는 모듈
 TUNABLE_MODULES = {
@@ -160,38 +160,21 @@ def apply_overrides(overrides: list) -> list:
 def evaluate_video(
     label: VideoLabel, video_path: Path, weights: str, pose_model: str, pose_imgsz: int, device: str, config: str
 ) -> VideoResult:
-    result = VideoResult(label=label, config=config)
     pipe = SmokingPipeline(
         pose_model, weights, device=device, pose_imgsz=pose_imgsz,
         play_audio=False, verbose=False,
     )
-    cap = cv2.VideoCapture(str(video_path))
-    fps = cap.get(cv2.CAP_PROP_FPS) or 0
-    frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
-    result.duration_sec = frame_count / fps if fps else 0.0
-
-    started = time.monotonic()
-    try:
-        while True:
-            ok, frame = cap.read()
-            if not ok:
-                break
-            # motion_detector.py와 같은 방식으로 영상 재생 위치를 시간 기준으로 쓴다
-            now = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
-            frame_result = pipe.process(frame, now)
-            result.frames += 1
-
-            for event in frame_result.events:
-                if event.kind == EVENT_CONFIRMED:
-                    result.confirmed_times.append(event.time)
-                elif event.kind == EVENT_ANNOUNCED and event.detail == "1차":
-                    result.announced_times.append(event.time)
-            for ef in pipe.event_filters.values():
-                result.max_ratio = max(result.max_ratio, ef.last_ratio)
-    finally:
-        cap.release()
-    result.wall_sec = time.monotonic() - started
-    return result
+    analysis = analyze_video(str(video_path), pipe)
+    return VideoResult(
+        label=label,
+        config=config,
+        duration_sec=analysis.duration_sec,
+        frames=analysis.frames,
+        wall_sec=analysis.wall_sec,
+        confirmed_times=analysis.confirmed_times(),
+        announced_times=analysis.first_announce_times(),
+        max_ratio=analysis.max_ratio,
+    )
 
 
 def _pct(numerator: int, denominator: int) -> str:

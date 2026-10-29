@@ -1,0 +1,195 @@
+/* 색은 역할 이름(변수)으로만 쓴다. 라이트/다크 값은 여기서 한 번에 바뀐다. */
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface-1: #fcfcfb;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.1);
+  /* 브랜드: 금연 표지판 빨강. 로고·헤더 띠·홈 제목·기본 버튼·선택 메뉴에만 쓴다.
+     차트 데이터와 "이벤트 확정" 상태색과는 역할이 다르다(확정은 상태색 + 🔔 아이콘 + 글자). */
+  --brand: #c8102e;        /* 흰 글자 대비 5.88:1 */
+  --brand-soft: #fbe4e6;   /* 선택 메뉴·안내 배지 배경 */
+  --brand-ink: #ffffff;    /* 브랜드 배경 위 글자 */
+  --highlight: #f0efec;    /* 표 행 선택·hover — 빨강을 쓰면 경고처럼 보여 중립색으로 */
+  /* 차트 시리즈 (검증한 categorical 앞 3칸) */
+  --series-1: #2a78d6; /* 파랑: 담배 · 손-입 거리 · 판정 비율 */
+  --series-2: #eb6834; /* 주황: 연기 */
+  --series-3: #1baf7a; /* 청록: 입 근처 담배 */
+  /* 상태색 — 항상 아이콘·글자와 함께 쓴다 */
+  --status-good: #0ca30c;
+  --status-critical: #d03b3b;
+  --status-warning: #fab219;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface-1: #1a1a19;
+    --text-primary: #f0efec;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.1);
+    --brand: #ef4b55;      /* 어두운 배경 대비 5.38:1 */
+    --brand-soft: #3a1517;
+    --brand-ink: #0b0b0b;  /* 밝은 빨강 위에는 검정 글자(5.44:1) */
+    --highlight: #2c2c2a;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d;
+  --surface-1: #1a1a19;
+  --text-primary: #f0efec;
+  --text-secondary: #c3c2b7;
+  --text-muted: #898781;
+  --grid: #2c2c2a;
+  --axis: #383835;
+  --border: rgba(255, 255, 255, 0.1);
+  --brand: #ef4b55;
+  --brand-soft: #3a1517;
+  --brand-ink: #0b0b0b;
+  --highlight: #2c2c2a;
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+a { color: var(--brand); }
+
+/* 상단 고정 메뉴 */
+.header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 12px 24px;
+  background: var(--surface-1);
+  border-bottom: 3px solid var(--brand);  /* 금연 표지판 빨강 띠 */
+}
+.header .brand { font-weight: 700; text-decoration: none; color: var(--brand); }
+.header nav { display: flex; gap: 4px; }
+.header nav a {
+  padding: 6px 12px;
+  border-radius: 6px;
+  text-decoration: none;
+  color: var(--text-secondary);
+}
+.header nav a.active { background: var(--brand-soft); color: var(--text-primary); font-weight: 600; }
+
+main { max-width: 1120px; margin: 0 auto; padding: 24px 16px 64px; }
+h1 { font-size: 24px; margin: 0 0 8px; }
+h1.brand-title { color: var(--brand); }
+h2 { font-size: 18px; margin: 32px 0 12px; }
+h3 { font-size: 15px; margin: 0 0 8px; }
+.muted { color: var(--text-muted); }
+.secondary { color: var(--text-secondary); }
+
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px;
+}
+.privacy-note {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--brand-soft);
+  font-size: 14px;
+}
+
+/* 홈 */
+.page-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-top: 24px; }
+.page-card { text-decoration: none; color: var(--text-primary); transition: border-color 0.15s; }
+.page-card:hover { border-color: var(--brand); }
+.page-card .icon { font-size: 28px; }
+.status-row { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 24px; font-size: 14px; }
+
+/* 폼 */
+.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+label { display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: var(--text-secondary); }
+input, select, button { font: inherit; }
+input[type="number"], select {
+  padding: 6px 8px;
+  border: 1px solid var(--axis);
+  border-radius: 6px;
+  background: var(--surface-1);
+  color: var(--text-primary);
+}
+button {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  background: var(--brand);
+  color: var(--brand-ink);
+  font-weight: 600;
+  cursor: pointer;
+}
+button:disabled { opacity: 0.5; cursor: default; }
+button.ghost { background: transparent; color: var(--brand); border: 1px solid var(--axis); }
+details summary { cursor: pointer; color: var(--text-secondary); margin: 16px 0 8px; }
+
+.progress { height: 8px; border-radius: 4px; background: var(--grid); overflow: hidden; margin-top: 12px; }
+.progress > div { height: 100%; background: var(--brand); transition: width 0.3s; }
+.error { color: var(--status-critical); }
+
+/* 결과 */
+.verdict { display: flex; align-items: center; gap: 12px; font-size: 18px; font-weight: 600; }
+.verdict .badge {
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 14px;
+  color: #fff;
+}
+.badge.confirmed { background: var(--status-critical); }
+.badge.none { background: var(--status-good); }
+.meta { display: flex; flex-wrap: wrap; gap: 4px 20px; font-size: 14px; color: var(--text-secondary); margin-top: 8px; }
+
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+th { color: var(--text-secondary); font-weight: 600; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+th { white-space: nowrap; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover { background: var(--highlight); }
+tr.selected { background: var(--highlight); }
+.table-wrap { overflow-x: auto; }
+.toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+
+/* 차트 */
+.chart-panel { margin-top: 16px; }
+.chart-panel h3 { display: flex; align-items: baseline; gap: 8px; }
+.legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: 13px; color: var(--text-secondary); margin-bottom: 4px; }
+.legend .key { display: inline-flex; align-items: center; gap: 6px; }
+.chart-tooltip {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+.chart-tooltip .row { display: flex; align-items: center; gap: 6px; }
+.chart-tooltip .value { font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.chart-tooltip .label { color: var(--text-secondary); }
