@@ -196,3 +196,23 @@ tr.selected { background: var(--highlight); }
 .chart-tooltip .row { display: flex; align-items: center; gap: 6px; }
 .chart-tooltip .value { font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
 .chart-tooltip .label { color: var(--text-secondary); }
+
+/* 실시간 */
+.controls { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; }
+label.inline { flex-direction: row; align-items: center; gap: 6px; }
+.live-layout { display: grid; grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr); gap: 16px; margin-top: 16px; }
+@media (max-width: 800px) { .live-layout { grid-template-columns: 1fr; } }
+.video-box { padding: 8px; }
+.video-box img { display: block; width: 100%; height: auto; border-radius: 6px; }
+.video-placeholder { display: flex; align-items: center; justify-content: center; aspect-ratio: 16 / 9; text-align: center; padding: 16px; }
+.person { padding: 10px 0; border-bottom: 1px solid var(--grid); }
+.person:last-child { border-bottom: none; }
+.person-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.person-stats { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 13px; color: var(--text-secondary); margin: 4px 0; font-variant-numeric: tabular-nums; }
+.meter { position: relative; height: 8px; border-radius: 4px; background: var(--grid); overflow: hidden; }
+.meter .fill { height: 100%; background: var(--series-1); }
+.meter .threshold { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--text-primary); }
+.small { font-size: 12px; }
+.event-list { list-style: none; padding: 0; margin: 0; font-size: 14px; max-height: 280px; overflow-y: auto; }
+.event-list li { padding: 4px 0; border-bottom: 1px solid var(--grid); }
+.person .badge { padding: 2px 8px; border-radius: 999px; font-size: 12px; color: #fff; }
