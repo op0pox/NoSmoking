@@ -16,6 +16,8 @@ export interface StatusResponse {
   models_found: boolean;
   default_params: AnalysisParams;
   event_window_sec: number;
+  audio_found: boolean;     // 안내 음성 mp3가 있나
+  live_running: boolean;
 }
 
 export interface PipelineEvent {
@@ -105,4 +107,53 @@ export async function startAnalysis(file: File, poseImgsz: number, params: Analy
 
 export async function fetchAnalysis(jobId: string): Promise<AnalysisJob> {
   return parseJson(await fetch(`/api/analyze/${jobId}`));
+}
+
+// ---------------------------------------------------------------------------
+// 실시간 (demo/backend/live.py)
+
+export interface LivePerson {
+  track_id: number;
+  state: string;                 // IDLE / PUFF / SMOKING_SUSPECTED
+  puff_count: number;
+  dist: number | null;
+  cig: number | null;            // 아래 4개는 2차 확인을 한 번이라도 돈 뒤부터 채워진다
+  smoke: number | null;
+  mouth_cig: number | null;
+  ratio: number | null;
+  confirmed: boolean;
+  announcer_state: string | null; // IDLE / FIRST_ANNOUNCED / COOLDOWN
+}
+
+export interface LiveEvent {
+  clock: string;                 // 발생 시각 (HH:MM:SS)
+  track_id: number;
+  kind: "confirmed" | "announced";
+  detail: string;
+}
+
+export interface LiveState {
+  running: boolean;
+  fps: number;
+  error: string | null;
+  stop_reason: string | null;
+  people: LivePerson[];
+  events: LiveEvent[];           // 최신이 앞
+}
+
+export async function startLive(camera: number, poseImgsz: number, playAudio: boolean): Promise<LiveState> {
+  return parseJson(await fetch("/api/live/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ camera, pose_imgsz: poseImgsz, play_audio: playAudio }),
+  }));
+}
+
+// keepalive: 페이지를 떠나는 중에도 정지 요청이 끝까지 가도록 한다
+export async function stopLive(): Promise<void> {
+  await fetch("/api/live/stop", { method: "POST", keepalive: true });
+}
+
+export async function fetchLiveState(): Promise<LiveState> {
+  return parseJson(await fetch("/api/live/state"));
 }

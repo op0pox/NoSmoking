@@ -1,8 +1,10 @@
 """
 demo/backend/app.py — 웹 데모 백엔드 (FastAPI, localhost 전용)
 
-영상 분석 페이지가 업로드한 영상을 감지 파이프라인으로 분석하고, 사람별 타임라인과
-이벤트를 JSON으로 돌려준다. 분석 로직은 평가 도구와 같은 edge/video_analysis.py를 쓴다.
+- 영상 분석: 업로드한 영상을 감지 파이프라인으로 분석하고, 사람별 타임라인과 이벤트를
+  JSON으로 돌려준다. 분석 로직은 평가 도구와 같은 edge/video_analysis.py를 쓴다.
+- 실시간: 백엔드가 웹캠을 직접 읽어 판정하고, 그린 화면을 MJPEG로 보여준다(demo/backend/live.py).
+  안내 음성은 이 PC의 스피커로 재생한다.
 
 실행 (저장소 루트에서):
     NS-venv/bin/uvicorn demo.backend.app:app --host 127.0.0.1 --port 8000
@@ -11,6 +13,8 @@ demo/backend/app.py — 웹 데모 백엔드 (FastAPI, localhost 전용)
 - 127.0.0.1에만 바인딩한다. 같은 PC의 브라우저만 접속할 수 있다.
 - 업로드한 영상은 분석하는 동안만 OS 임시 폴더에 두고, 분석이 끝나면(실패해도) 즉시 삭제한다.
 - 프레임을 저장하거나 외부로 보내지 않는다. 메모리에 남는 결과는 시각·점수 같은 숫자뿐이다.
+  실시간 화면용으로는 가장 최근 프레임 한 장만 메모리에 두고 계속 덮어쓴다.
+- 실시간 카메라는 [시작] 요청이 있어야 켜지고, 화면을 보는 곳이 없으면 스스로 꺼진다.
 """
 
 from __future__ import annotations
@@ -25,9 +29,11 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
+import cv2
 import torch
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
 
 # edge/ 모듈은 서로를 `from pipeline import ...`처럼 폴더 안 기준으로 import하므로 경로에 추가한다
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -39,9 +45,14 @@ import pipeline  # noqa: E402
 from pipeline import SmokingPipeline  # noqa: E402
 from video_analysis import analyze_video, summarize_track  # noqa: E402
 
+from .live import LiveSession  # noqa: E402
+
 POSE_MODEL = os.environ.get("NOSMOKING_POSE_MODEL", str(REPO_ROOT / "yolov8n-pose.pt"))
 CIGARETTE_MODEL = os.environ.get("NOSMOKING_CIGARETTE_MODEL", str(REPO_ROOT / "cigarette-v5-best.pt"))
 DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
+FIRST_MP3 = str(REPO_ROOT / "assets" / "audio" / "first_announce.mp3")
+SECOND_MP3 = str(REPO_ROOT / "assets" / "audio" / "second_announce.mp3")
+CAMERA_INDEXES = (0, 1, 2, 3)  # macOS는 아이폰 연속성 카메라가 0번으로 잡힐 수 있어 고를 수 있게 한다
 MAX_KEPT_JOBS = 10   # 메모리에 결과를 들고 있을 최근 분석 수 (숫자 결과만, 영상 없음)
 
 # 화면에서 바꿔 볼 수 있는 상수. (화면용 이름) -> (모듈, 상수 이름)
@@ -83,6 +94,8 @@ def status():
         "models_found": Path(POSE_MODEL).is_file() and Path(CIGARETTE_MODEL).is_file(),
         "default_params": _DEFAULT_PARAMS,
         "event_window_sec": event_filter.EVENT_WINDOW_SEC,
+        "audio_found": Path(FIRST_MP3).is_file() and Path(SECOND_MP3).is_file(),
+        "live_running": _live is not None and _live.running,
     }
 
 
@@ -96,6 +109,8 @@ async def start_analysis(
     event_confirm_ratio: Optional[float] = Form(None),
 ):
     """영상을 받아 분석 작업을 등록하고 job_id를 돌려준다. 결과는 GET /api/analyze/{job_id}로 확인."""
+    if _live is not None and _live.running:
+        raise HTTPException(409, "실시간 감지가 켜져 있습니다. 실시간을 정지한 뒤 분석해 주세요.")
     if pose_imgsz not in (640, 960, 1280, 1920):
         raise HTTPException(400, "pose_imgsz는 640, 960, 1280, 1920 중 하나여야 합니다.")
     overrides = {
@@ -193,3 +208,91 @@ def _to_response(analysis) -> dict:
         "events": [asdict(e) for e in analysis.events],
         "tracks": tracks,
     }
+
+
+# ======================================================================
+# 실시간 (웹캠)
+# ======================================================================
+_live: Optional[LiveSession] = None
+
+
+class LiveStartRequest(BaseModel):
+    camera: int = 0
+    pose_imgsz: int = 640
+    play_audio: bool = True
+
+
+def _analysis_busy() -> bool:
+    with _jobs_lock:
+        return any(job["status"] in ("queued", "running") for job in _jobs.values())
+
+
+@app.post("/api/live/start")
+async def live_start(req: LiveStartRequest):
+    """카메라를 켜고 실시간 감지를 시작한다.
+
+    async 함수라 이벤트 루프(메인 스레드)에서 카메라를 연다 — macOS는 카메라 권한 요청을
+    메인 스레드에서 해야 팝업이 제대로 뜬다. 프레임 읽기·판정은 LiveSession의 작업 스레드가 한다.
+    """
+    global _live
+    if _live is not None and _live.running:
+        raise HTTPException(409, "이미 실시간 감지가 켜져 있습니다.")
+    if _analysis_busy():
+        raise HTTPException(409, "영상 분석이 진행 중입니다. 끝난 뒤 시작해 주세요.")
+    if req.camera not in CAMERA_INDEXES:
+        raise HTTPException(400, f"카메라 번호는 {CAMERA_INDEXES} 중 하나여야 합니다.")
+    if req.pose_imgsz not in (640, 960, 1280):
+        raise HTTPException(400, "pose_imgsz는 640, 960, 1280 중 하나여야 합니다.")
+
+    cap = cv2.VideoCapture(req.camera)
+    if not cap.isOpened():
+        cap.release()
+        raise HTTPException(
+            500,
+            f"카메라 {req.camera}번을 열 수 없습니다. 시스템 설정 > 개인정보 보호 및 보안 > 카메라에서 "
+            "백엔드를 실행한 터미널(또는 IDE)에 권한이 있는지 확인하고, 다른 카메라 번호도 시도해 보세요.",
+        )
+    _apply_params({})  # 영상 분석에서 바꿔 본 기준이 남지 않게 기본값으로
+    pipe = SmokingPipeline(
+        POSE_MODEL, CIGARETTE_MODEL, device=DEVICE, pose_imgsz=req.pose_imgsz,
+        first_mp3=FIRST_MP3, second_mp3=SECOND_MP3, play_audio=req.play_audio, verbose=False,
+    )
+    _live = LiveSession(cap, pipe, mirror=True)
+    _live.start()
+    return _live.state()
+
+
+@app.post("/api/live/stop")
+def live_stop():
+    if _live is not None:
+        _live.stop()
+        return _live.state()
+    return {"running": False}
+
+
+@app.get("/api/live/state")
+def live_state():
+    if _live is None:
+        return {"running": False, "people": [], "events": [], "fps": 0, "error": None, "stop_reason": None}
+    if _live.running:
+        _live.touch()
+    return _live.state()
+
+
+@app.get("/api/live/stream")
+def live_stream():
+    """판정 결과를 그린 화면을 MJPEG로 보낸다. 브라우저에서 <img src="/api/live/stream">로 본다."""
+    session = _live
+    if session is None or not session.running:
+        raise HTTPException(409, "실시간 감지가 꺼져 있습니다.")
+
+    def frames():
+        last_id = 0
+        while session.running:
+            session.touch()
+            last_id, jpeg = session.wait_for_frame(last_id)
+            if jpeg is None:
+                continue
+            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
+
+    return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame")
