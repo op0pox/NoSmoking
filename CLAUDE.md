@@ -69,6 +69,7 @@ server/        # FastAPI, DB
 dashboard/     # Streamlit
 training/      # 학습 스크립트, 전처리, data.yaml, download_dataset.py
 eval/          # 정량 평가 도구(python -m eval.run), 정답 라벨(labels.csv)
+demo/          # 웹 데모 (localhost 전용): backend(FastAPI) + frontend(React + TypeScript)
 docs/          # 기획서, 가이드, 회의록
 ```
 
