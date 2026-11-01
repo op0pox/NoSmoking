@@ -9,11 +9,12 @@
   --grid: #e1e0d9;
   --axis: #c3c2b7;
   --border: rgba(11, 11, 11, 0.1);
-  /* 브랜드: 금연 표지판 빨강. 로고·헤더 띠·홈 제목·기본 버튼·선택 메뉴에만 쓴다.
+  /* 브랜드: 다홍빛 주황(테라코타). 헤더 띠·로고·홈 제목·기본 버튼·선택 메뉴에만 쓴다.
      차트 데이터와 "이벤트 확정" 상태색과는 역할이 다르다(확정은 상태색 + 🔔 아이콘 + 글자). */
-  --brand: #c8102e;        /* 흰 글자 대비 5.88:1 */
-  --brand-soft: #fbe4e6;   /* 선택 메뉴·안내 배지 배경 */
-  --brand-ink: #ffffff;    /* 브랜드 배경 위 글자 */
+  --brand: #d97757;        /* 장식용(글자 없는 띠·막대·테두리). 흰 글자를 올리기엔 대비 3.12:1로 부족 */
+  --brand-strong: #b5532f; /* 글자·버튼용 같은 계열의 진한 색. 흰 글자 대비 4.95:1 */
+  --brand-soft: #f9e6df;   /* 선택 메뉴·안내 배지 배경 */
+  --brand-ink: #ffffff;    /* 버튼(brand-strong) 위 글자 */
   --highlight: #f0efec;    /* 표 행 선택·hover — 빨강을 쓰면 경고처럼 보여 중립색으로 */
   /* 차트 시리즈 (검증한 categorical 앞 3칸) */
   --series-1: #2a78d6; /* 파랑: 담배 · 손-입 거리 · 판정 비율 */
@@ -36,9 +37,10 @@
     --grid: #2c2c2a;
     --axis: #383835;
     --border: rgba(255, 255, 255, 0.1);
-    --brand: #ef4b55;      /* 어두운 배경 대비 5.38:1 */
-    --brand-soft: #3a1517;
-    --brand-ink: #0b0b0b;  /* 밝은 빨강 위에는 검정 글자(5.44:1) */
+    --brand: #d97757;        /* 어두운 배경 대비 6.23:1 */
+    --brand-strong: #d97757;
+    --brand-soft: #3a2018;
+    --brand-ink: #0b0b0b;    /* 주황 버튼 위에는 검정 글자(6.3:1) */
     --highlight: #2c2c2a;
     --series-1: #3987e5;
     --series-2: #d95926;
@@ -55,8 +57,9 @@
   --grid: #2c2c2a;
   --axis: #383835;
   --border: rgba(255, 255, 255, 0.1);
-  --brand: #ef4b55;
-  --brand-soft: #3a1517;
+  --brand: #d97757;
+  --brand-strong: #d97757;
+  --brand-soft: #3a2018;
   --brand-ink: #0b0b0b;
   --highlight: #2c2c2a;
   --series-1: #3987e5;
@@ -71,7 +74,7 @@ body {
   color: var(--text-primary);
   line-height: 1.5;
 }
-a { color: var(--brand); }
+a { color: var(--brand-strong); }
 
 /* 상단 고정 메뉴 */
 .header {
@@ -83,9 +86,9 @@ a { color: var(--brand); }
   gap: 24px;
   padding: 12px 24px;
   background: var(--surface-1);
-  border-bottom: 3px solid var(--brand);  /* 금연 표지판 빨강 띠 */
+  border-bottom: 3px solid var(--brand);  /* 브랜드 색 띠 */
 }
-.header .brand { font-weight: 700; text-decoration: none; color: var(--brand); }
+.header .brand { font-weight: 700; text-decoration: none; color: var(--brand-strong); }
 .header nav { display: flex; gap: 4px; }
 .header nav a {
   padding: 6px 12px;
@@ -97,7 +100,7 @@ a { color: var(--brand); }
 
 main { max-width: 1120px; margin: 0 auto; padding: 24px 16px 64px; }
 h1 { font-size: 24px; margin: 0 0 8px; }
-h1.brand-title { color: var(--brand); }
+h1.brand-title { color: var(--brand-strong); }
 h2 { font-size: 18px; margin: 32px 0 12px; }
 h3 { font-size: 15px; margin: 0 0 8px; }
 .muted { color: var(--text-muted); }
@@ -141,13 +144,13 @@ button {
   padding: 8px 16px;
   border: none;
   border-radius: 6px;
-  background: var(--brand);
+  background: var(--brand-strong);
   color: var(--brand-ink);
   font-weight: 600;
   cursor: pointer;
 }
 button:disabled { opacity: 0.5; cursor: default; }
-button.ghost { background: transparent; color: var(--brand); border: 1px solid var(--axis); }
+button.ghost { background: transparent; color: var(--brand-strong); border: 1px solid var(--axis); }
 details summary { cursor: pointer; color: var(--text-secondary); margin: 16px 0 8px; }
 
 .progress { height: 8px; border-radius: 4px; background: var(--grid); overflow: hidden; margin-top: 12px; }
