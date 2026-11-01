@@ -82,7 +82,7 @@ class VideoResult:
     wall_sec: float = 0.0
     confirmed_times: list = field(default_factory=list)   # 이벤트 확정 시각들
     announced_times: list = field(default_factory=list)   # 1차 안내 시각들
-    max_ratio: float = 0.0           # 영상 전체에서 시간 필터 판정 비율의 최댓값 (아깝게 놓친 정도 확인용)
+    max_ratio: float = 0.0           # 확정이 가능한 구간(관측 10초 이후)의 판정 비율 최댓값 (아깝게 놓친 정도 확인용)
 
     def _interval(self):
         start = self.label.smoke_start_sec or 0.0

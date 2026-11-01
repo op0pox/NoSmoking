@@ -37,6 +37,7 @@ class TrackSample:
     mouth_cig: Optional[float] = None
     smoking_frame: Optional[bool] = None   # 이 프레임을 "흡연"으로 판정했나 (시간 필터 입력)
     ratio: Optional[float] = None           # 시간 필터의 최근 10초 판정 비율
+    ready: Optional[bool] = None            # 관측이 10초 이상 쌓여 확정이 가능한 구간인가
     confirmed: Optional[bool] = None
 
 
@@ -51,7 +52,8 @@ class TrackSummary:
     max_cig: float
     max_smoke: float
     max_mouth_cig: float
-    max_ratio: float
+    max_ratio: float             # 확정이 가능한 구간(관측 10초 이후)의 최고 비율
+    max_ratio_early: float       # 관측 10초 전의 최고 비율 (표본이 적어 높게 튀기 쉬움, 확정에는 안 쓰임)
     confirmed: bool
     reason: str                  # 어느 단계까지 갔는지 / 어디서 막혔는지 (사람이 읽는 설명)
 
@@ -63,7 +65,7 @@ class AnalysisResult:
     frames: int = 0
     wall_sec: float = 0.0
     events: list = field(default_factory=list)        # PipelineEvent 목록
-    max_ratio: float = 0.0                            # 영상 전체 시간 필터 비율 최댓값
+    max_ratio: float = 0.0                            # 확정이 가능한 구간의 시간 필터 비율 최댓값
     timeline: dict = field(default_factory=dict)      # track_id -> [TrackSample] (record_timeline일 때만)
 
     def confirmed_times(self) -> list:
@@ -100,7 +102,8 @@ def analyze_video(
             result.frames += 1
             result.events.extend(frame_result.events)
             for ef in pipe.event_filters.values():
-                result.max_ratio = max(result.max_ratio, ef.last_ratio)
+                if ef.ready:  # 관측 10초 전의 비율은 표본이 적어 튀고, 확정에도 쓰이지 않는다
+                    result.max_ratio = max(result.max_ratio, ef.last_ratio)
             if record_timeline:
                 _record_frame(result.timeline, pipe, frame_result.persons, now)
             if on_progress is not None:
@@ -130,6 +133,7 @@ def _record_frame(timeline: dict, pipe: SmokingPipeline, persons: list, now: flo
             sample.mouth_cig = scores["mouth_cig"]
             sample.smoking_frame = is_smoking_frame(scores)
             sample.ratio = ef.last_ratio
+            sample.ready = ef.ready
             sample.confirmed = ef.confirmed
         timeline.setdefault(person.track_id, []).append(sample)
 
@@ -156,7 +160,8 @@ def summarize_track(track_id: int, samples: list, events: list) -> TrackSummary:
         max_cig=max((s.cig for s in checked), default=0.0),
         max_smoke=max((s.smoke for s in checked), default=0.0),
         max_mouth_cig=max((s.mouth_cig for s in checked), default=0.0),
-        max_ratio=max((s.ratio for s in checked), default=0.0),
+        max_ratio=max((s.ratio for s in checked if s.ready), default=0.0),
+        max_ratio_early=max((s.ratio for s in checked if not s.ready), default=0.0),
         confirmed=confirmed,
         reason="",
     )
@@ -182,7 +187,13 @@ def _explain(s: TrackSummary, measured_dist: bool) -> str:
             f"관측 시간 부족 — {s.last_t - s.first_t:.0f}초만 보임 "
             f"(확정에는 최소 {event_filter.EVENT_WINDOW_SEC:.0f}초 필요)"
         )
+    early_note = ""
+    if s.max_ratio_early >= required > s.max_ratio:
+        early_note = (
+            f" · 관측 초반에 {s.max_ratio_early:.0%}까지 올랐지만 "
+            f"확정에 필요한 {event_filter.EVENT_WINDOW_SEC:.0f}초 관측 전이었음"
+        )
     return (
         f"시간 필터 미달 — 흡연 판정 {s.smoking_frames}/{s.checks}회, "
-        f"10초 최고 비율 {s.max_ratio:.0%} (기준 {required:.0%})"
+        f"10초 최고 비율 {s.max_ratio:.0%} (기준 {required:.0%}){early_note}"
     )
