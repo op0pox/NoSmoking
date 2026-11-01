@@ -48,6 +48,7 @@ class EventTimeFilter:
         self._last_update_time: Optional[float] = None
         self.confirmed = False
         self.last_ratio = 0.0
+        self.ready = False  # 관측이 EVENT_WINDOW_SEC 이상 쌓여 확정이 가능한 상태인가
 
     def reset(self):
         self._judgments.clear()
@@ -55,6 +56,7 @@ class EventTimeFilter:
         self._last_update_time = None
         self.confirmed = False
         self.last_ratio = 0.0
+        self.ready = False
 
     def update(self, now: float, is_smoking_frame: bool) -> bool:
         """새 프레임 판정을 추가하고 이벤트 확정 여부를 반환한다."""
@@ -74,6 +76,6 @@ class EventTimeFilter:
         positive = sum(1 for _, v in self._judgments if v)
         self.last_ratio = positive / len(self._judgments) if self._judgments else 0.0
 
-        has_enough_history = (now - self._observation_start) >= EVENT_WINDOW_SEC
-        self.confirmed = has_enough_history and self.last_ratio >= EVENT_CONFIRM_RATIO
+        self.ready = (now - self._observation_start) >= EVENT_WINDOW_SEC
+        self.confirmed = self.ready and self.last_ratio >= EVENT_CONFIRM_RATIO
         return self.confirmed

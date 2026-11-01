@@ -25,7 +25,7 @@ from ultralytics import YOLO
 from cigarette_detector import CIGARETTE_CLASS, SMOKE_CLASS, CigaretteDetector, best_by_class
 from event_filter import EVENT_WINDOW_SEC, EventTimeFilter
 from motion_gate import (
-    LEFT_SHOULDER, MIN_PUFFS, RIGHT_SHOULDER, STATE_SUSPECTED,
+    LEFT_SHOULDER, LEFT_WRIST, MIN_PUFFS, RIGHT_SHOULDER, RIGHT_WRIST, STATE_SUSPECTED, WRIST_CONF_THRESHOLD,
     SmokingMotionDetector, _dist, _mouth_point, _point, _ts,
 )
 from voice_announcer import VoiceAnnouncer
@@ -35,6 +35,15 @@ from voice_announcer import VoiceAnnouncer
 # 1차 게이트 상수는 motion_gate.py, 시간 필터 상수는 event_filter.py에 있다.
 # ============================================================
 STALE_TRACK_TIMEOUT_SEC = 5.0  # 이 시간 이상 화면에서 안 보이면 해당 track 상태를 폐기
+TRACKER_CONFIG = "bytetrack.yaml"  # 사람 추적기 설정 (ultralytics 기본). 다른 설정과 비교할 때 바꾼다.
+                                    # 2026-11-02 실험: 놓친 사람을 기억하는 시간(track_buffer)을 1초 → 3초로
+                                    # 늘려도 ID 수가 거의 그대로였다(test4 18 → 17개, test5·drink 변화 없음, #52).
+
+CROP_MODE = "mouth_hands"      # 2차 확인 크롭 범위. "mouth_hands": 입·손목 주변만 / "person": 사람 bbox 전체(이전 방식).
+                                # 사람 전체를 640으로 줄여 보면 담배가 몇 픽셀밖에 안 되고 배경도 섞인다(#34).
+                                # 입·손목 주변만 자르면 담배가 몇 배 크게 보이고 배경 오검출도 줄어든다.
+CROP_MARGIN_RATIO = 0.6        # 입·손목을 감싼 영역 바깥으로 둘 여백(어깨너비 배수). 손가락 끝의 담배,
+                                # 입 위로 올라가는 연기가 잘리지 않을 만큼.
 
 OBJECT_CHECK_INTERVAL_SEC = 1.0  # SUSPECTED가 아닌 사람도 이 주기로 2차 확인을 돌린다(SUSPECTED면
                                   # 매 프레임). 모션 3회를 다 채우지 못해도 담배/연기가 여러 프레임에
@@ -61,6 +70,9 @@ CIG_SMOKE_COOCCURRENCE_WINDOW_SEC = 5.0  # 모션이 안 잡혀도, 담배와 �
                                           # 오검출될 수 있어 연기 단독보다는 신뢰도가 높지만, 담배를
                                           # 입에 무는 순간과 연기가 보이는 순간은 실제로도 약간의
                                           # 시차가 있을 수 있어 OBJECT_SIGNAL_HOLD_SEC보다 길게 잡는다.
+MOTION_PAIR_MIN_CONF = 0.5     # 모션과 짝지을 담배·연기의 최소 신뢰도. 이보다 약한 검출은 모션과 짝짓지 않는다(#39).
+                                # 모션은 마시기·흡연을 구분하지 못하는데, 물 마시기로 puff가 쌓여 모션 점수가 1.0이 되면
+                                # √(0.36 × 1.0) = 0.6처럼 약한 오검출까지 기준(0.5)을 넘어 오탐이 났다(drink.MOV).
 CIG_NEAR_MOUTH_DIST = 0.5      # cigarette 박스 중심과 입 추정 위치 사이 거리(어깨너비 배수)가 이 값 이하면
                                 # "입 근처 담배"로 본다. 2026-10-27 실측(v5): 흡연 영상의 검출은 61~84%가
                                 # 이 범위 안이었고, 물 마시는 영상의 물병 오검출은 3%뿐이었다(손 쪽에 몰림).
@@ -80,6 +92,11 @@ def _pair_score(a: float, b: float) -> float:
     if a <= 0 or b <= 0:
         return 0.0
     return (a * b) ** 0.5
+
+
+def _at_least(conf: float, minimum: float) -> float:
+    """conf가 minimum 미만이면 0으로 본다 (약한 검출을 짝짓기에서 빼는 용도)."""
+    return conf if conf >= minimum else 0.0
 
 
 def _held_conf(
@@ -251,10 +268,10 @@ class SmokingPipeline:
         try:
             # tracker를 명시하지 않으면 ultralytics 버전에 따라 new_track_thresh가
             # 매우 높은 트래커가 기본값이 되어(예: 0.7) 웹캠의 일반적인 포즈 신뢰도로는
-            # track id가 영영 배정되지 않을 수 있다. bytetrack은 임계값이 낮고(0.25)
-            # 가벼워서 명시적으로 고정한다.
+            # track id가 영영 배정되지 않을 수 있다. bytetrack 계열(임계값 0.25, 가벼움)로
+            # 고정하고, 설정은 TRACKER_CONFIG(프로젝트 전용 파일)를 쓴다.
             results = self.pose_model.track(
-                frame, persist=True, verbose=False, device=self.device, tracker="bytetrack.yaml",
+                frame, persist=True, verbose=False, device=self.device, tracker=TRACKER_CONFIG,
                 imgsz=self.pose_imgsz,
             )
         except Exception as e:  # mps에서 특정 연산이 미지원일 때 cpu로 폴백
@@ -264,7 +281,7 @@ class SmokingPipeline:
             self.device = "cpu"
             self.cigarette_detector.device = "cpu"
             results = self.pose_model.track(
-                frame, persist=True, verbose=False, device=self.device, tracker="bytetrack.yaml",
+                frame, persist=True, verbose=False, device=self.device, tracker=TRACKER_CONFIG,
                 imgsz=self.pose_imgsz,
             )
         return results[0]
@@ -282,15 +299,14 @@ class SmokingPipeline:
         )
 
     def _check_object(self, frame: np.ndarray, person: PersonResult, now: float) -> bool:
-        """사람 bbox를 크롭해 담배/연기 모델을 돌리고, 점수 합산과 시간 필터를 갱신한다.
-        이번 호출로 이벤트가 새로 확정됐으면 True를 반환한다."""
+        """사람의 입·손 주변(또는 사람 bbox)을 크롭해 담배/연기 모델을 돌리고, 점수 합산과
+        시간 필터를 갱신한다. 이번 호출로 이벤트가 새로 확정됐으면 True를 반환한다."""
         track_id = person.track_id
         detector = person.detector
         self.last_object_check[track_id] = now
 
-        x1, y1, x2, y2 = person.box
-        crop_x1, crop_y1 = max(0, int(x1)), max(0, int(y1))
-        crop = frame[crop_y1:int(y2), crop_x1:int(x2)]
+        crop_x1, crop_y1, crop_x2, crop_y2 = self._crop_region(person, frame.shape)
+        crop = frame[crop_y1:crop_y2, crop_x1:crop_x2]
         detections = self.cigarette_detector.detect_all(crop)
         obj_result = best_by_class(detections)
         mouth_cig_conf = self._mouth_cigarette_conf(detections, person.keypoints, crop_x1, crop_y1)
@@ -334,8 +350,8 @@ class SmokingPipeline:
             )
         combined = max(
             _pair_score(held_cig_long, held_smoke_long),
-            _pair_score(held_cig_short, motion_score),
-            _pair_score(held_smoke_short, motion_score),
+            _pair_score(_at_least(held_cig_short, MOTION_PAIR_MIN_CONF), motion_score),
+            _pair_score(_at_least(held_smoke_short, MOTION_PAIR_MIN_CONF), motion_score),
             high_conf_bypass,
         )
 
@@ -373,6 +389,44 @@ class SmokingPipeline:
                 f"track {track_id}: 🔔 이벤트 확정 (최근 {EVENT_WINDOW_SEC:.0f}s 판정 비율 {ef.last_ratio:.0%})"
             )
         return confirmed_now
+
+    def _crop_region(self, person: PersonResult, frame_shape: tuple) -> tuple:
+        """2차 확인에 넣을 영역 (x1, y1, x2, y2)을 원본 프레임 좌표로 반환한다.
+
+        CROP_MODE가 "mouth_hands"면 입 추정 위치와 보이는 손목을 감싼 영역에 어깨너비 비례 여백을 둔다.
+        손을 내리고 있으면 손목까지 포함해 세로로 길어진다(손에 든 담배도 보이도록).
+        얼굴·어깨를 못 잡아 입 위치를 모르면 사람 bbox 전체로 돌아간다(증거를 아예 못 보는 것보다 낫다).
+        """
+        height, width = frame_shape[:2]
+        bx1, by1, bx2, by2 = person.box
+        person_box = (max(0, int(bx1)), max(0, int(by1)), min(width, int(bx2)), min(height, int(by2)))
+        if CROP_MODE != "mouth_hands":
+            return person_box
+
+        kpts = person.keypoints
+        mouth = _mouth_point(kpts)
+        l_sh, r_sh = _point(kpts, LEFT_SHOULDER), _point(kpts, RIGHT_SHOULDER)
+        if mouth is None or l_sh is None or r_sh is None:
+            return person_box
+        shoulder_width = _dist(l_sh, r_sh)
+        if shoulder_width < 1e-3:
+            return person_box
+
+        points = [mouth]
+        for wrist_idx in (LEFT_WRIST, RIGHT_WRIST):
+            wrist = _point(kpts, wrist_idx, WRIST_CONF_THRESHOLD)
+            if wrist is not None:
+                points.append(wrist)
+        margin = CROP_MARGIN_RATIO * shoulder_width
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        # 사람 bbox가 아니라 프레임 경계로만 자른다 — 입 위로 올라가는 연기는 사람 bbox 밖일 수 있다
+        return (
+            max(0, int(min(xs) - margin)),
+            max(0, int(min(ys) - margin)),
+            min(width, int(max(xs) + margin)),
+            min(height, int(max(ys) + margin)),
+        )
 
     def _mouth_cigarette_conf(self, detections: list, kpts: np.ndarray, crop_x1: int, crop_y1: int) -> float:
         """입 추정 위치에서 CIG_NEAR_MOUTH_DIST 이내에 있는 cigarette 검출 중 최고 신뢰도를 반환한다.

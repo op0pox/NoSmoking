@@ -39,6 +39,7 @@ export interface TrackSample {
   mouth_cig: number | null;
   smoking_frame: boolean | null;
   ratio: number | null;
+  ready: boolean | null;   // 관측 10초 이상 — 확정이 가능한 구간
   confirmed: boolean | null;
 }
 
@@ -52,7 +53,8 @@ export interface TrackSummary {
   max_cig: number;
   max_smoke: number;
   max_mouth_cig: number;
-  max_ratio: number;
+  max_ratio: number;        // 확정이 가능한 구간의 최고 비율
+  max_ratio_early: number;  // 관측 10초 전의 최고 비율 (확정에는 안 쓰임)
   confirmed: boolean;
   reason: string;
 }
