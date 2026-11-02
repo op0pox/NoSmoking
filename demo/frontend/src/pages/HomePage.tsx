@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { fetchStatus, type StatusResponse } from "../api";
+import bannerUrl from "../assets/home-banner.webp";
 
 // 홈: 프로젝트 소개 + 원칙 + 페이지 선택 카드 + 백엔드 상태 (시연 직전 점검용)
 export default function HomePage() {
@@ -13,6 +14,14 @@ export default function HomePage() {
 
   return (
     <>
+      {/* 배너 이미지(AI 생성). 그림 속 글자를 화면 낭독기도 읽을 수 있게 같은 내용을 alt에 둔다 */}
+      <img
+        className="home-banner"
+        src={bannerUrl}
+        alt="AI 흡연 감지 시스템 — 실시간 영상 분석으로 흡연 행위를 자동으로 감지하고, 안내 음성으로 금연을 안내합니다."
+        width={2172}
+        height={724}
+      />
       <h1 className="brand-title">🚭 교내 금연구역 흡연 계도 시스템</h1>
       <p className="secondary">
         카메라 영상에서 흡연 행동을 감지하면 안내 음성으로 계도합니다. 사람을 식별하거나 단속하지 않습니다.
