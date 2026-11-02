@@ -29,6 +29,7 @@ class TrackSample:
     state: str                        # 1차 게이트 상태 (IDLE / PUFF / SMOKING_SUSPECTED)
     puff_count: int
     dist: Optional[float] = None      # 손-입 정규화 거리 (이번 프레임에 계산됐을 때만)
+    box: Optional[list] = None        # 사람 박스 [x1, y1, x2, y2] (원본 영상 픽셀 좌표, 영상 위 표시용)
     checked: bool = False             # 이번 프레임에 2차 확인을 돌렸나
     # 아래는 2차 확인을 돌린 프레임에만 채워진다
     cig: Optional[float] = None
@@ -39,6 +40,7 @@ class TrackSample:
     ratio: Optional[float] = None           # 시간 필터의 최근 10초 판정 비율
     ready: Optional[bool] = None            # 관측이 10초 이상 쌓여 확정이 가능한 구간인가
     confirmed: Optional[bool] = None
+    objects: Optional[list] = None          # 2차 확인에서 잡힌 박스 [{"class", "conf", "box"}] (원본 영상 좌표)
 
 
 @dataclass
@@ -62,6 +64,8 @@ class TrackSummary:
 class AnalysisResult:
     duration_sec: float = 0.0
     fps: float = 0.0
+    width: int = 0                    # 영상 가로·세로(픽셀). 박스 좌표를 화면 크기에 맞출 때 쓴다
+    height: int = 0
     frames: int = 0
     wall_sec: float = 0.0
     events: list = field(default_factory=list)        # PipelineEvent 목록
@@ -87,6 +91,8 @@ def analyze_video(
     if not cap.isOpened():
         raise ValueError(f"영상 파일을 열 수 없습니다: {video_path}")
     result.fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
+    result.width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    result.height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     result.duration_sec = total_frames / result.fps if result.fps else 0.0
 
@@ -121,7 +127,10 @@ def _record_frame(timeline: dict, pipe: SmokingPipeline, persons: list, now: flo
         dist = None
         if detector.history and detector.history[-1][0] == now:
             dist = detector.history[-1][1]
-        sample = TrackSample(t=now, state=detector.state, puff_count=detector.puff_count, dist=dist)
+        sample = TrackSample(
+            t=now, state=detector.state, puff_count=detector.puff_count, dist=dist,
+            box=[int(v) for v in person.box],
+        )
 
         if pipe.last_object_check.get(person.track_id) == now:
             scores = pipe.object_scores[person.track_id]
@@ -134,6 +143,10 @@ def _record_frame(timeline: dict, pipe: SmokingPipeline, persons: list, now: flo
             sample.smoking_frame = is_smoking_frame(scores)
             sample.ratio = ef.last_ratio
             sample.ready = ef.ready
+            sample.objects = [
+                {"class": o["class"], "conf": round(o["conf"], 3), "box": [int(v) for v in o["box"]]}
+                for o in person.object_boxes
+            ]
             sample.confirmed = ef.confirmed
         timeline.setdefault(person.track_id, []).append(sample)
 

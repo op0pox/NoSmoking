@@ -202,6 +202,8 @@ def _to_response(analysis) -> dict:
     return {
         "duration_sec": analysis.duration_sec,
         "fps": analysis.fps,
+        "width": analysis.width,
+        "height": analysis.height,
         "frames": analysis.frames,
         "wall_sec": analysis.wall_sec,
         "max_ratio": analysis.max_ratio,

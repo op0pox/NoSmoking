@@ -32,6 +32,7 @@ export interface TrackSample {
   state: string;         // IDLE / PUFF / SMOKING_SUSPECTED
   puff_count: number;
   dist: number | null;
+  box: [number, number, number, number] | null;  // 사람 박스 (원본 영상 픽셀 좌표)
   checked: boolean;      // 이 프레임에 2차 확인을 돌렸나 (아래 값들은 이때만 채워짐)
   cig: number | null;
   smoke: number | null;
@@ -41,6 +42,13 @@ export interface TrackSample {
   ratio: number | null;
   ready: boolean | null;   // 관측 10초 이상 — 확정이 가능한 구간
   confirmed: boolean | null;
+  objects: DetectedObject[] | null;  // 2차 확인에서 잡힌 담배·연기 박스
+}
+
+export interface DetectedObject {
+  class: "cigarette" | "smoke";
+  conf: number;
+  box: [number, number, number, number];  // 원본 영상 픽셀 좌표
 }
 
 export interface TrackSummary {
@@ -67,6 +75,8 @@ export interface TrackResult {
 export interface AnalysisResult {
   duration_sec: number;
   fps: number;
+  width: number;         // 영상 가로·세로(픽셀)
+  height: number;
   frames: number;
   wall_sec: number;
   max_ratio: number;

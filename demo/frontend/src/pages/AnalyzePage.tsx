@@ -10,6 +10,7 @@ import {
   type TrackResult,
 } from "../api";
 import Timeline from "../components/Timeline";
+import VideoReview from "../components/VideoReview";
 
 const POLL_INTERVAL_MS = 1000;
 const POSE_IMGSZ_OPTIONS = [640, 1280];
@@ -138,14 +139,21 @@ export default function AnalyzePage() {
         {job?.status === "error" && <p className="error">⚠️ 분석 실패 — {job.error}</p>}
       </form>
 
-      {job?.status === "done" && job.result && <AnalysisView key={jobId} job={job} result={job.result} />}
+      {job?.status === "done" && job.result && (
+        <AnalysisView key={jobId} job={job} result={job.result} file={file} onPickFile={setFile} />
+      )}
     </>
   );
 }
 
 // ---------------------------------------------------------------------------
 
-function AnalysisView({ job, result }: { job: AnalysisJob; result: AnalysisResult }) {
+function AnalysisView({ job, result, file, onPickFile }: {
+  job: AnalysisJob;
+  result: AnalysisResult;
+  file: File | null;
+  onPickFile: (file: File) => void;
+}) {
   const [onlyChecked, setOnlyChecked] = useState(true);
   const [selectedId, setSelectedId] = useState<number | null>(result.tracks[0]?.summary.track_id ?? null);
   const [showTable, setShowTable] = useState(false);
@@ -185,6 +193,22 @@ function AnalysisView({ job, result }: { job: AnalysisJob; result: AnalysisResul
             {job.params.combined_confirm_threshold} · 확정 비율 {Math.round(job.params.event_confirm_ratio * 100)}%
           </span>
         </div>
+      </div>
+
+      <h2>영상으로 보기</h2>
+      <div className="card">
+        <VideoReview
+          file={file}
+          expectedFileName={job.file_name}
+          onPickFile={onPickFile}
+          result={result}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
+        />
+        <p className="muted" style={{ marginBottom: 0 }}>
+          흰 박스: 사람 · 주황: 흡연 의심(puff 3회 이상) · 빨강: 이벤트 확정 · 굵은 테두리: 아래 표에서 고른 사람 ·
+          파랑/주황 작은 박스: 2차 확인에서 잡힌 담배/연기와 신뢰도
+        </p>
       </div>
 
       {result.events.length > 0 && (
