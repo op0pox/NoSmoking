@@ -26,8 +26,18 @@ export default function VideoReview({ file, expectedFileName, onPickFile, result
   const [currentTime, setCurrentTime] = useState(0);
 
   // 고른 파일을 이 브라우저 안에서만 재생할 주소. 화면을 떠나면 해제한다.
-  const videoUrl = useMemo(() => (file ? URL.createObjectURL(file) : null), [file]);
-  useEffect(() => () => { if (videoUrl) URL.revokeObjectURL(videoUrl); }, [videoUrl]);
+  // 주소를 만들고 해제하는 일을 같은 effect 안에서 해야 한다 — 개발 모드(StrictMode)는 effect를
+  // "실행 → 정리 → 다시 실행"하는데, 만들기를 useMemo에 두면 정리 때 해제된 주소가 그대로 남아 재생이 안 된다.
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!file) {
+      setVideoUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    setVideoUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
 
   const segments = useMemo(() => confirmedSegments(result.tracks), [result]);
   const smokingTicks = useMemo(
