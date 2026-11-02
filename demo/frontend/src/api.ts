@@ -149,16 +149,47 @@ export interface LiveState {
   fps: number;
   error: string | null;
   stop_reason: string | null;
+  source_label: string;          // 카메라 이름 (예: "본관 뒤 금연구역", "이 PC 카메라 0번")
+  note: string | null;           // 일시적인 안내 (예: 네트워크 카메라 재연결 중)
   people: LivePerson[];
   events: LiveEvent[];           // 최신이 앞
 }
 
-export async function startLive(camera: number, poseImgsz: number, playAudio: boolean): Promise<LiveState> {
+// 실시간 입력: 이 PC 카메라 번호 또는 등록한 네트워크 카메라 id
+export type LiveSource = { kind: "local"; camera: number } | { kind: "network"; cameraId: string };
+
+export async function startLive(source: LiveSource, poseImgsz: number, playAudio: boolean): Promise<LiveState> {
+  const sourceBody = source.kind === "local" ? { camera: source.camera } : { camera_id: source.cameraId };
   return parseJson(await fetch("/api/live/start", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ camera, pose_imgsz: poseImgsz, play_audio: playAudio }),
+    body: JSON.stringify({ ...sourceBody, pose_imgsz: poseImgsz, play_audio: playAudio }),
   }));
+}
+
+// ---------------------------------------------------------------------------
+// 네트워크 카메라 등록 (설치 위치 이름 + 주소. 비밀번호는 서버가 가려서 보낸다)
+
+export interface NetworkCameraInfo {
+  id: string;
+  name: string;
+  url: string;   // rtsp://아이디:****@192.168.0.30:554/... 처럼 비밀번호가 가려진 주소
+}
+
+export async function listCameras(): Promise<NetworkCameraInfo[]> {
+  return parseJson(await fetch("/api/cameras"));
+}
+
+export async function addCamera(name: string, url: string): Promise<NetworkCameraInfo> {
+  return parseJson(await fetch("/api/cameras", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, url }),
+  }));
+}
+
+export async function deleteCamera(id: string): Promise<void> {
+  await parseJson(await fetch(`/api/cameras/${id}`, { method: "DELETE" }));
 }
 
 // keepalive: 페이지를 떠나는 중에도 정지 요청이 끝까지 가도록 한다
