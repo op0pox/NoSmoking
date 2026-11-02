@@ -123,6 +123,7 @@ h3 { font-size: 15px; margin: 0 0 8px; }
 }
 
 /* 홈 */
+.home-banner { display: block; width: 100%; height: auto; border-radius: 12px; margin-bottom: 24px; }
 .page-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-top: 24px; }
 .page-card { text-decoration: none; color: var(--text-primary); transition: border-color 0.15s; }
 .page-card:hover { border-color: var(--brand); }
