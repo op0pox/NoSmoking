@@ -234,3 +234,10 @@ label.inline { flex-direction: row; align-items: center; gap: 6px; }
 .segment-bar .playhead { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--text-primary); }
 .segment-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .segment-chips button { padding: 4px 10px; font-size: 13px; }
+
+/* 네트워크 카메라 등록 */
+.camera-manager { margin-top: 12px; }
+.camera-manager summary { margin: 0; font-weight: 600; color: var(--text-primary); }
+.camera-list { list-style: none; padding: 0; margin: 8px 0 16px; }
+.camera-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--grid); }
+input[type="text"] { padding: 6px 8px; border: 1px solid var(--axis); border-radius: 6px; background: var(--surface-1); color: var(--text-primary); }

@@ -32,12 +32,16 @@ MAX_KEPT_EVENTS = 50         # 화면에 보여줄 최근 이벤트 수
 class LiveSession:
     """웹캠 1대에 대한 실시간 감지 세션. 한 번에 하나만 만든다.
 
-    start()는 카메라를 연 캡처 객체를 받는다 — macOS는 카메라 권한 요청을 메인 스레드에서
-    해야 해서, 카메라 열기는 호출하는 쪽(요청 처리 이벤트 루프)에서 한다.
+    cap은 이미 연 입력 소스다 — 이 PC 카메라(cv2.VideoCapture) 또는 네트워크 카메라
+    (camera_source.NetworkCamera). 둘 다 read()/release()가 있다. macOS는 카메라 권한 요청을
+    메인 스레드에서 해야 해서, 카메라 열기는 호출하는 쪽(요청 처리 이벤트 루프)에서 한다.
+    source_label은 화면·기록에 보여줄 카메라 이름이다.
     """
 
-    def __init__(self, cap: cv2.VideoCapture, pipe: SmokingPipeline, mirror: bool = True):
+    def __init__(self, cap, pipe: SmokingPipeline, mirror: bool = True, source_label: str = ""):
         self._cap = cap
+        self.source_label = source_label
+        self.note: Optional[str] = None   # "재연결 중" 같은 일시적인 안내
         self._pipe = pipe
         self._mirror = mirror   # 웹캠은 셀카처럼 좌우 반전 (motion_detector.py와 같음)
 
@@ -92,6 +96,8 @@ class LiveSession:
                 "fps": round(self.fps, 1),
                 "error": self.error,
                 "stop_reason": self.stop_reason,
+                "source_label": self.source_label,
+                "note": self.note,
                 "started_at": self.started_at,
                 "people": list(self._people),
                 "events": list(self._events),
@@ -109,6 +115,13 @@ class LiveSession:
 
                 ok, frame = self._cap.read()
                 if not ok or frame is None:
+                    # 네트워크 카메라: 재연결 중이면 기다리고, 재연결까지 실패했으면 이유를 보여주고 멈춘다
+                    if getattr(self._cap, "failed", None):
+                        self.error = self._cap.failed
+                        break
+                    if getattr(self._cap, "reconnecting", False):
+                        self.note = "네트워크 카메라 연결이 끊겨 다시 연결하는 중…"
+                        continue
                     failures += 1
                     if failures >= MAX_READ_FAILURES:
                         self.error = "카메라에서 프레임을 읽지 못했습니다 (권한·연결 확인)"
@@ -116,6 +129,7 @@ class LiveSession:
                     time.sleep(0.05)
                     continue
                 failures = 0
+                self.note = None
                 if self._mirror:
                     frame = cv2.flip(frame, 1)
 

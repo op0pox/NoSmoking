@@ -19,6 +19,7 @@ demo/backend/app.py — 웹 데모 백엔드 (FastAPI, localhost 전용)
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -29,9 +30,9 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
-import cv2
 import torch
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -45,6 +46,7 @@ import pipeline  # noqa: E402
 from pipeline import SmokingPipeline  # noqa: E402
 from video_analysis import analyze_video, summarize_track  # noqa: E402
 
+from .camera_source import NetworkCamera, SourceError, mask_credentials, open_local_camera, validate_network_url  # noqa: E402
 from .live import LiveSession  # noqa: E402
 
 POSE_MODEL = os.environ.get("NOSMOKING_POSE_MODEL", str(REPO_ROOT / "yolov8n-pose.pt"))
@@ -52,6 +54,7 @@ CIGARETTE_MODEL = os.environ.get("NOSMOKING_CIGARETTE_MODEL", str(REPO_ROOT / "c
 DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
 FIRST_MP3 = str(REPO_ROOT / "assets" / "audio" / "first_announce.mp3")
 SECOND_MP3 = str(REPO_ROOT / "assets" / "audio" / "second_announce.mp3")
+CAMERA_CONFIG_PATH = Path(__file__).resolve().parent / "data" / "cameras.json"  # 등록한 카메라(설정만, 커밋 안 함)
 CAMERA_INDEXES = (0, 1, 2, 3)  # macOS는 아이폰 연속성 카메라가 0번으로 잡힐 수 있어 고를 수 있게 한다
 MAX_KEPT_JOBS = 10   # 메모리에 결과를 들고 있을 최근 분석 수 (숫자 결과만, 영상 없음)
 
@@ -219,9 +222,65 @@ _live: Optional[LiveSession] = None
 
 
 class LiveStartRequest(BaseModel):
-    camera: int = 0
+    camera: int = 0                    # 이 PC 카메라 번호 (camera_id가 없을 때)
+    camera_id: Optional[str] = None    # 등록한 네트워크 카메라
     pose_imgsz: int = 640
     play_audio: bool = True
+
+
+# ----------------------------------------------------------------------
+# 네트워크 카메라 등록 — 설치 위치 이름과 주소(설정)만 저장한다. 영상은 저장하지 않는다.
+# 주소에 카메라 비밀번호가 들어갈 수 있어 파일은 커밋하지 않고(.gitignore), 화면에는 가려서 보낸다.
+# ----------------------------------------------------------------------
+class CameraCreateRequest(BaseModel):
+    name: str
+    url: str
+
+
+def _load_cameras() -> list:
+    if not CAMERA_CONFIG_PATH.is_file():
+        return []
+    return json.loads(CAMERA_CONFIG_PATH.read_text(encoding="utf-8"))
+
+
+def _save_cameras(cameras: list):
+    CAMERA_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CAMERA_CONFIG_PATH.write_text(json.dumps(cameras, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _public_camera(camera: dict) -> dict:
+    return {"id": camera["id"], "name": camera["name"], "url": mask_credentials(camera["url"])}
+
+
+@app.get("/api/cameras")
+def list_cameras():
+    return [_public_camera(c) for c in _load_cameras()]
+
+
+@app.post("/api/cameras")
+def add_camera(req: CameraCreateRequest):
+    name, url = req.name.strip(), req.url.strip()
+    if not name:
+        raise HTTPException(400, "설치 위치 이름을 입력해 주세요.")
+    try:
+        validate_network_url(url)
+    except SourceError as e:
+        raise HTTPException(400, str(e)) from None
+    cameras = _load_cameras()
+    camera = {"id": uuid.uuid4().hex[:8], "name": name, "url": url}
+    cameras.append(camera)
+    _save_cameras(cameras)
+    return _public_camera(camera)
+
+
+@app.delete("/api/cameras/{camera_id}")
+def delete_camera(camera_id: str):
+    cameras = _load_cameras()
+    remaining = [c for c in cameras if c["id"] != camera_id]
+    if len(remaining) == len(cameras):
+        raise HTTPException(404, "해당 카메라가 없습니다.")
+    _save_cameras(remaining)
+    return {"ok": True}
 
 
 def _analysis_busy() -> bool:
@@ -233,33 +292,40 @@ def _analysis_busy() -> bool:
 async def live_start(req: LiveStartRequest):
     """카메라를 켜고 실시간 감지를 시작한다.
 
-    async 함수라 이벤트 루프(메인 스레드)에서 카메라를 연다 — macOS는 카메라 권한 요청을
-    메인 스레드에서 해야 팝업이 제대로 뜬다. 프레임 읽기·판정은 LiveSession의 작업 스레드가 한다.
+    - 이 PC 카메라: async 함수라 이벤트 루프(메인 스레드)에서 연다 — macOS는 카메라 권한 요청을
+      메인 스레드에서 해야 팝업이 제대로 뜬다.
+    - 네트워크 카메라: 연결에 최대 몇 초 걸려서, 다른 요청이 멈추지 않게 작업 스레드에서 연다.
+    프레임 읽기·판정은 LiveSession의 작업 스레드가 한다.
     """
     global _live
     if _live is not None and _live.running:
         raise HTTPException(409, "이미 실시간 감지가 켜져 있습니다.")
     if _analysis_busy():
         raise HTTPException(409, "영상 분석이 진행 중입니다. 끝난 뒤 시작해 주세요.")
-    if req.camera not in CAMERA_INDEXES:
-        raise HTTPException(400, f"카메라 번호는 {CAMERA_INDEXES} 중 하나여야 합니다.")
     if req.pose_imgsz not in (640, 960, 1280):
         raise HTTPException(400, "pose_imgsz는 640, 960, 1280 중 하나여야 합니다.")
 
-    cap = cv2.VideoCapture(req.camera)
-    if not cap.isOpened():
-        cap.release()
-        raise HTTPException(
-            500,
-            f"카메라 {req.camera}번을 열 수 없습니다. 시스템 설정 > 개인정보 보호 및 보안 > 카메라에서 "
-            "백엔드를 실행한 터미널(또는 IDE)에 권한이 있는지 확인하고, 다른 카메라 번호도 시도해 보세요.",
-        )
+    try:
+        if req.camera_id is not None:
+            camera = next((c for c in _load_cameras() if c["id"] == req.camera_id), None)
+            if camera is None:
+                raise HTTPException(404, "등록한 카메라를 찾을 수 없습니다.")
+            cap = await run_in_threadpool(NetworkCamera, camera["url"])
+            mirror, label = False, camera["name"]
+        else:
+            if req.camera not in CAMERA_INDEXES:
+                raise HTTPException(400, f"카메라 번호는 {CAMERA_INDEXES} 중 하나여야 합니다.")
+            cap = open_local_camera(req.camera)
+            mirror, label = True, f"이 PC 카메라 {req.camera}번"   # 셀카처럼 좌우 반전
+    except SourceError as e:
+        raise HTTPException(400, str(e)) from None
+
     _apply_params({})  # 영상 분석에서 바꿔 본 기준이 남지 않게 기본값으로
     pipe = SmokingPipeline(
         POSE_MODEL, CIGARETTE_MODEL, device=DEVICE, pose_imgsz=req.pose_imgsz,
         first_mp3=FIRST_MP3, second_mp3=SECOND_MP3, play_audio=req.play_audio, verbose=False,
     )
-    _live = LiveSession(cap, pipe, mirror=True)
+    _live = LiveSession(cap, pipe, mirror=mirror, source_label=label)
     _live.start()
     return _live.state()
 
