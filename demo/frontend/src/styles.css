@@ -216,3 +216,20 @@ label.inline { flex-direction: row; align-items: center; gap: 6px; }
 .event-list { list-style: none; padding: 0; margin: 0; font-size: 14px; max-height: 280px; overflow-y: auto; }
 .event-list li { padding: 4px 0; border-bottom: 1px solid var(--grid); }
 .person .badge { padding: 2px 8px; border-radius: 999px; font-size: 12px; color: #fff; }
+
+/* 영상으로 보기 */
+.video-stage { position: relative; background: #000; border-radius: 6px; overflow: hidden; }
+.video-stage video { display: block; width: 100%; max-height: 70vh; }
+.video-stage canvas { position: absolute; top: 0; left: 0; pointer-events: none; }
+.segment-legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: 13px; color: var(--text-secondary); margin: 12px 0 4px; }
+.segment-legend .key { display: inline-flex; align-items: center; gap: 6px; }
+.swatch { display: inline-block; width: 14px; height: 10px; border-radius: 2px; }
+.swatch.confirmed { background: var(--status-critical); }
+.swatch.tick { width: 3px; height: 12px; background: var(--series-1); }
+.segment-bar { position: relative; height: 32px; border-radius: 6px; background: var(--grid); cursor: pointer; }
+.segment-bar .tick { position: absolute; bottom: 4px; width: 2px; height: 10px; margin-left: -1px; background: var(--series-1); }
+.segment-bar .segment { position: absolute; top: 4px; height: 14px; border-radius: 3px; background: var(--status-critical); }
+.segment-bar .segment:hover { outline: 2px solid var(--text-primary); }
+.segment-bar .playhead { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--text-primary); }
+.segment-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.segment-chips button { padding: 4px 10px; font-size: 13px; }
