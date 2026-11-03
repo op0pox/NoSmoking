@@ -14,15 +14,17 @@ import VideoReview from "../components/VideoReview";
 
 const POLL_INTERVAL_MS = 1000;
 const POSE_IMGSZ_OPTIONS = [640, 1280];
+const PEOPLE_ROWS = 6;   // 사람별 판정 표는 처음에 이만큼만 보여주고 "모두 보기"로 펼친다
 
 // 화면에서 바꿔 볼 수 있는 파라미터 (이름은 api.ts의 AnalysisParams와 같다)
 const PARAM_FIELDS: { key: keyof AnalysisParams; label: string; step: number; min: number; max: number }[] = [
-  { key: "near_threshold", label: "손-입 거리 기준 (NEAR_THRESHOLD)", step: 0.05, min: 0.1, max: 1.5 },
+  { key: "near_threshold", label: "손-입 거리 기준", step: 0.05, min: 0.1, max: 1.5 },
   { key: "mouth_cig_conf_threshold", label: "입 근처 담배 신뢰도 기준", step: 0.05, min: 0.05, max: 1 },
-  { key: "combined_confirm_threshold", label: "짝 점수 기준 (combined)", step: 0.05, min: 0.05, max: 1 },
-  { key: "event_confirm_ratio", label: "시간 필터 확정 비율", step: 0.05, min: 0.05, max: 1 },
+  { key: "combined_confirm_threshold", label: "짝 점수 기준", step: 0.05, min: 0.05, max: 1 },
+  { key: "event_confirm_ratio", label: "확정 비율 (10초 중)", step: 0.05, min: 0.05, max: 1 },
 ];
 
+// 영상 분석(검증 도구): 녹화한 영상으로 판정 과정을 사람별·시간별로 확인한다.
 export default function AnalyzePage() {
   const [defaultParams, setDefaultParams] = useState<AnalysisParams | null>(null);
   const [params, setParams] = useState<AnalysisParams | null>(null);
@@ -40,7 +42,7 @@ export default function AnalyzePage() {
         setDefaultParams(s.default_params);
         setParams(s.default_params);
       })
-      .catch((e: Error) => setError(`백엔드에 연결할 수 없습니다 — ${e.message}`));
+      .catch((e: Error) => setError(`백엔드에 연결할 수 없습니다. ${e.message}`));
   }, []);
 
   // 분석이 끝날 때까지 1초마다 진행 상황을 묻는다
@@ -81,62 +83,67 @@ export default function AnalyzePage() {
 
   return (
     <>
-      <h1>영상 분석</h1>
-      <p className="secondary">영상을 올리면 판정 과정을 사람별·시간별로 보여줍니다.</p>
-      <span className="privacy-note">🔒 영상은 이 PC에서만 분석되고, 분석이 끝나면 바로 삭제됩니다</span>
+      <div className="title-row">
+        <div>
+          <h1>영상 분석</h1>
+          <p className="sub">
+            녹화한 영상으로 판정 과정을 사람별·시간별로 검증합니다. 영상은 이 PC에서만 분석하고, 분석이 끝나면 바로 지웁니다.
+          </p>
+        </div>
+      </div>
 
-      <form className="card" style={{ marginTop: 16 }} onSubmit={onSubmit}>
-        <div className="form-grid">
-          <label>
-            영상 파일
-            <input type="file" accept="video/*" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+      <form className="panel form" onSubmit={onSubmit} aria-label="분석할 영상">
+        <div className="grid">
+          <label className="field span-6">
+            <span>영상 파일</span>
+            <input className="input" type="file" accept="video/*" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
           </label>
-          <label>
-            포즈 추론 해상도
-            <select value={poseImgsz} onChange={(e) => setPoseImgsz(Number(e.target.value))}>
+          <label className="field span-3">
+            <span>포즈 추론 해상도</span>
+            <select className="input" value={poseImgsz} onChange={(e) => setPoseImgsz(Number(e.target.value))}>
               {POSE_IMGSZ_OPTIONS.map((v) => (
-                <option key={v} value={v}>{v}{v > 640 ? " (사람이 작게 나오는 영상, 느림)" : " (기본)"}</option>
+                <option key={v} value={v}>{v}{v > 640 ? " (작게 찍힌 사람용, 느림)" : " (기본)"}</option>
               ))}
             </select>
           </label>
+          <div className="span-3" style={{ alignSelf: "end" }}>
+            <button type="submit" className="btn primary" style={{ width: "100%", height: 38 }} disabled={!file || !params || running}>
+              {running ? "분석 중…" : "분석 시작"}
+            </button>
+          </div>
         </div>
 
         {params && defaultParams && (
-          <details>
+          <details style={{ marginTop: 16 }}>
             <summary>판정 기준 바꿔 보기</summary>
-            <div className="form-grid">
+            <div className="grid" style={{ marginTop: 12 }}>
               {PARAM_FIELDS.map((f) => (
-                <label key={f.key}>
-                  {f.label}
+                <label key={f.key} className="field span-3">
+                  <span>{f.label}</span>
                   <input
-                    type="number" step={f.step} min={f.min} max={f.max} value={params[f.key]}
+                    className="input" type="number" step={f.step} min={f.min} max={f.max} value={params[f.key]}
                     onChange={(e) => setParams({ ...params, [f.key]: Number(e.target.value) })}
                   />
-                  <span className="muted">기본값 {defaultParams[f.key]}</span>
+                  <span className="hint">기본값 {defaultParams[f.key]}</span>
                 </label>
               ))}
             </div>
-            <button type="button" className="ghost" style={{ marginTop: 12 }} onClick={() => setParams(defaultParams)}>
+            <button type="button" className="btn small" style={{ marginTop: 12 }} onClick={() => setParams(defaultParams)}>
               기본값으로
             </button>
           </details>
         )}
 
-        <div style={{ marginTop: 16 }}>
-          <button type="submit" disabled={!file || !params || running}>
-            {running ? "분석 중…" : "분석 시작"}
-          </button>
-        </div>
         {running && job && (
-          <>
+          <div style={{ marginTop: 16 }}>
             <div className="progress"><div style={{ width: `${Math.round(job.progress * 100)}%` }} /></div>
-            <p className="muted">
-              {job.status === "queued" ? "대기 중" : `${Math.round(job.progress * 100)}% 처리`} — 영상 길이와 해상도에 따라 수십 초~몇 분 걸립니다.
+            <p className="small muted" style={{ marginTop: 8 }}>
+              {job.status === "queued" ? "대기 중" : `${Math.round(job.progress * 100)}% 처리`}. 영상 길이와 해상도에 따라 수십 초~몇 분 걸립니다.
             </p>
-          </>
+          </div>
         )}
-        {error && <p className="error">⚠️ {error}</p>}
-        {job?.status === "error" && <p className="error">⚠️ 분석 실패 — {job.error}</p>}
+        {error && <p className="error" style={{ marginTop: 12 }}>{error}</p>}
+        {job?.status === "error" && <p className="error" style={{ marginTop: 12 }}>분석하지 못했습니다. {job.error}</p>}
       </form>
 
       {job?.status === "done" && job.result && (
@@ -155,48 +162,60 @@ function AnalysisView({ job, result, file, onPickFile }: {
   onPickFile: (file: File) => void;
 }) {
   const [onlyChecked, setOnlyChecked] = useState(true);
+  const [showAll, setShowAll] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(result.tracks[0]?.summary.track_id ?? null);
   const [showTable, setShowTable] = useState(false);
 
   const confirms = result.events.filter((e) => e.kind === "confirmed");
   const announces = result.events.filter((e) => e.kind === "announced");
-  const visibleTracks = onlyChecked ? result.tracks.filter((t) => t.summary.checks > 0) : result.tracks;
+  const filtered = onlyChecked ? result.tracks.filter((t) => t.summary.checks > 0) : result.tracks;
+  const visibleTracks = showAll ? filtered : filtered.slice(0, PEOPLE_ROWS);
   const selected = useMemo<TrackResult | undefined>(
     () => result.tracks.find((t) => t.summary.track_id === selectedId),
     [result, selectedId],
   );
+  const required = job.params.event_confirm_ratio;
 
   return (
     <>
-      <h2>결과 — {job.file_name}</h2>
-      <div className="card">
-        <div className="verdict">
-          {confirms.length > 0 ? (
-            <>
-              <span className="badge confirmed">🔔 이벤트 확정</span>
-              {confirms.length}회 · 첫 확정 {confirms[0].time.toFixed(1)}초
-              {announces.length > 0 && ` · 첫 방송 ${announces[0].time.toFixed(1)}초`}
-            </>
-          ) : (
-            <>
-              <span className="badge none">✓ 이벤트 없음</span>
-              시간 필터 최고 판정 비율 {Math.round(result.max_ratio * 100)}% (기준 {Math.round(job.params.event_confirm_ratio * 100)}%)
-            </>
-          )}
-        </div>
-        <div className="meta">
-          <span>영상 {result.duration_sec.toFixed(1)}초 · {result.fps.toFixed(0)}fps · {result.frames}프레임</span>
-          <span>처리 {result.wall_sec.toFixed(1)}초</span>
-          <span>포즈 {job.pose_imgsz}</span>
-          <span>
-            기준: 손-입 {job.params.near_threshold} · 입 근처 담배 {job.params.mouth_cig_conf_threshold} · 짝 점수{" "}
-            {job.params.combined_confirm_threshold} · 확정 비율 {Math.round(job.params.event_confirm_ratio * 100)}%
-          </span>
+      <div className="title-row section" style={{ marginTop: 32, marginBottom: 16 }}>
+        <div>
+          <h2 style={{ fontSize: 18, lineHeight: "24px", fontWeight: 600 }}>{job.file_name}</h2>
+          <p className="sub small">
+            영상 {result.duration_sec.toFixed(1)}초 · {result.fps.toFixed(0)}fps · {result.frames}프레임 · 처리 {result.wall_sec.toFixed(1)}초 · 포즈 {job.pose_imgsz} ·
+            기준 손-입 {job.params.near_threshold} · 입 근처 담배 {job.params.mouth_cig_conf_threshold} · 짝 점수 {job.params.combined_confirm_threshold} · 확정 {Math.round(required * 100)}%
+          </p>
         </div>
       </div>
 
-      <h2>영상으로 보기</h2>
-      <div className="card">
+      <div className="kpis" aria-label="분석 결과">
+        <div className="kpi">
+          <div className="kpi-label">판정</div>
+          <div className="kpi-value">{confirms.length > 0 ? <>확정 {confirms.length}<small>회</small></> : "이벤트 없음"}</div>
+          <div className="kpi-note">{confirms.length > 0 ? `사람 ${new Set(confirms.map((c) => c.track_id)).size}명` : "안내 방송이 나가지 않는 영상"}</div>
+        </div>
+        <div className="kpi">
+          <div className="kpi-label">첫 확정</div>
+          <div className="kpi-value">{confirms.length > 0 ? <>{confirms[0].time.toFixed(1)}<small>초</small></> : <span className="faint">—</span>}</div>
+          <div className="kpi-note">영상 시작부터</div>
+        </div>
+        <div className="kpi">
+          <div className="kpi-label">첫 안내 방송</div>
+          <div className="kpi-value">{announces.length > 0 ? <>{announces[0].time.toFixed(1)}<small>초</small></> : <span className="faint">—</span>}</div>
+          <div className="kpi-note">1차 안내 기준</div>
+        </div>
+        <div className="kpi">
+          <div className="kpi-label">10초 판정 비율 최고</div>
+          <div className="kpi-value">{Math.round(result.max_ratio * 100)}<small>%</small></div>
+          <div className="kpi-note">확정 기준 {Math.round(required * 100)}% · 관측 10초 이후만</div>
+        </div>
+      </div>
+
+      <section className="panel section" aria-labelledby="review-title">
+        <header>
+          <h2 id="review-title">영상으로 보기</h2>
+          <span className="meta">브라우저 안에서만 재생 · 업로드하지 않음</span>
+        </header>
         <VideoReview
           file={file}
           expectedFileName={job.file_name}
@@ -205,91 +224,70 @@ function AnalysisView({ job, result, file, onPickFile }: {
           selectedId={selectedId}
           onSelect={setSelectedId}
         />
-        <p className="muted" style={{ marginBottom: 0 }}>
-          흰 박스: 사람 · 주황: 흡연 의심(puff 3회 이상) · 빨강: 이벤트 확정 · 굵은 테두리: 아래 표에서 고른 사람 ·
-          파랑/주황 작은 박스: 2차 확인에서 잡힌 담배/연기와 신뢰도
-        </p>
-      </div>
+      </section>
 
-      {result.events.length > 0 && (
-        <>
-          <h2>이벤트</h2>
-          <div className="card table-wrap">
-            <table>
-              <thead>
-                <tr><th className="num">시각</th><th>사람</th><th>종류</th></tr>
-              </thead>
-              <tbody>
-                {result.events.map((e, i) => (
-                  <tr key={i}>
-                    <td className="num">{e.time.toFixed(1)}초</td>
-                    <td>#{e.track_id}</td>
-                    <td>{e.kind === "confirmed" ? `🔔 이벤트 확정 (판정 비율 ${e.detail})` : `📢 ${e.detail} 안내 방송`}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
-
-      <h2>사람별 판정</h2>
-      <div className="card">
-        <div className="toolbar">
-          <span className="secondary">행을 누르면 아래에 그 사람의 타임라인이 나옵니다.</span>
-          <label style={{ flexDirection: "row", alignItems: "center" }}>
-            <input type="checkbox" checked={onlyChecked} onChange={(e) => setOnlyChecked(e.target.checked)} />
-            2차 확인을 받은 사람만 ({result.tracks.filter((t) => t.summary.checks > 0).length}/{result.tracks.length})
+      <section className="panel section" aria-labelledby="people-title">
+        <header>
+          <h2 id="people-title">사람별 판정</h2>
+          <label className="inline-field small">
+            <input type="checkbox" className="switch" checked={onlyChecked} onChange={(e) => { setOnlyChecked(e.target.checked); setShowAll(false); }} />
+            2차 확인을 받은 사람만 ({result.tracks.filter((t) => t.summary.checks > 0).length}/{result.tracks.length}명)
           </label>
-        </div>
+        </header>
         <div className="table-wrap">
-          <table>
+          <table className="wide-table">
             <thead>
               <tr>
-                <th>사람</th><th className="num">보인 구간</th><th className="num">puff</th><th className="num">2차 확인</th>
-                <th className="num">흡연 판정</th><th className="num">담배 / 입 근처 / 연기 최고</th><th className="num">최고 비율</th>
-                <th>판정 근거</th>
+                <th>사람</th><th className="n">보인 구간</th><th className="n">puff</th><th className="n">흡연 판정</th>
+                <th className="n">담배 · 입 근처 · 연기 최고</th><th className="n">판정 비율 최고</th><th>판정 근거</th>
               </tr>
             </thead>
             <tbody>
               {visibleTracks.map(({ summary: s }) => (
                 <tr
                   key={s.track_id}
-                  className={`clickable${s.track_id === selectedId ? " selected" : ""}`}
+                  className="clickable"
+                  aria-selected={s.track_id === selectedId}
+                  tabIndex={0}
                   onClick={() => setSelectedId(s.track_id)}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelectedId(s.track_id); } }}
                 >
-                  <td>{s.confirmed ? "🔔 " : ""}#{s.track_id}</td>
-                  <td className="num">{s.first_t.toFixed(0)}~{s.last_t.toFixed(0)}초</td>
-                  <td className="num">{s.max_puffs}</td>
-                  <td className="num">{s.checks}</td>
-                  <td className="num">{s.smoking_frames}</td>
-                  <td className="num">{s.max_cig.toFixed(2)} / {s.max_mouth_cig.toFixed(2)} / {s.max_smoke.toFixed(2)}</td>
-                  <td className="num">{Math.round(s.max_ratio * 100)}%</td>
-                  <td>{s.reason}</td>
+                  <td>사람 #{s.track_id} {s.confirmed && <span className="pill neg" style={{ marginLeft: 6 }}>확정</span>}</td>
+                  <td className="n">{s.first_t.toFixed(0)}–{s.last_t.toFixed(0)}초</td>
+                  <td className="n">{s.max_puffs}</td>
+                  <td className="n">{s.smoking_frames}<span className="faint">/{s.checks}</span></td>
+                  <td className="n">{s.max_cig.toFixed(2)} · {s.max_mouth_cig.toFixed(2)} · {s.max_smoke.toFixed(2)}</td>
+                  <td className="n">{Math.round(s.max_ratio * 100)}%</td>
+                  <td className="muted">{s.reason}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-      </div>
+        {filtered.length > PEOPLE_ROWS && (
+          <button type="button" className="card-link" style={{ marginTop: 12 }} onClick={() => setShowAll(!showAll)}>
+            {showAll ? "접기" : `모두 보기 (${filtered.length}명)`}
+          </button>
+        )}
+      </section>
 
       {selected && (
-        <>
-          <h2>사람 #{selected.summary.track_id} 타임라인</h2>
-          <div className="card">
-            <p className="secondary" style={{ marginTop: 0 }}>{selected.summary.reason}</p>
-            <Timeline
-              samples={selected.samples}
-              events={result.events.filter((e) => e.track_id === selected.summary.track_id)}
-              params={job.params}
-              durationSec={result.duration_sec}
-            />
-            <button type="button" className="ghost" style={{ marginTop: 16 }} onClick={() => setShowTable(!showTable)}>
-              {showTable ? "표 닫기" : "2차 확인 값 표로 보기"}
+        <section className="panel section" aria-labelledby="timeline-title">
+          <header>
+            <h2 id="timeline-title">사람 #{selected.summary.track_id} 타임라인</h2>
+            <button type="button" className="btn small" onClick={() => setShowTable(!showTable)}>
+              {showTable ? "표 닫기" : "값을 표로 보기"}
             </button>
-            {showTable && <CheckTable track={selected} />}
-          </div>
-        </>
+          </header>
+          <p className="muted" style={{ marginBottom: 16 }}>{selected.summary.reason}</p>
+          <Timeline
+            samples={selected.samples}
+            events={result.events.filter((e) => e.track_id === selected.summary.track_id)}
+            params={job.params}
+            durationSec={result.duration_sec}
+          />
+          {showTable && <CheckTable track={selected} />}
+        </section>
       )}
     </>
   );
@@ -299,25 +297,25 @@ function AnalysisView({ job, result, file, onPickFile }: {
 function CheckTable({ track }: { track: TrackResult }) {
   const rows = track.samples.filter((s) => s.checked);
   return (
-    <div className="table-wrap" style={{ marginTop: 12, maxHeight: 360, overflowY: "auto" }}>
+    <div className="table-wrap" style={{ marginTop: 16, maxHeight: 360, overflowY: "auto" }}>
       <table>
         <thead>
           <tr>
-            <th className="num">시각</th><th className="num">담배</th><th className="num">입 근처 담배</th><th className="num">연기</th>
-            <th className="num">짝 점수</th><th>판정</th><th className="num">10초 비율</th><th>1차 게이트</th>
+            <th className="n">시각</th><th className="n">담배</th><th className="n">입 근처 담배</th><th className="n">연기</th>
+            <th className="n">짝 점수</th><th>판정</th><th className="n">10초 비율</th><th>1차 게이트</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((s, i) => (
             <tr key={i}>
-              <td className="num">{s.t.toFixed(1)}초</td>
-              <td className="num">{s.cig?.toFixed(2)}</td>
-              <td className="num">{s.mouth_cig?.toFixed(2)}</td>
-              <td className="num">{s.smoke?.toFixed(2)}</td>
-              <td className="num">{s.combined?.toFixed(2)}</td>
-              <td>{s.smoking_frame ? "흡연" : "—"}</td>
-              <td className="num">{s.ratio !== null ? `${Math.round(s.ratio * 100)}%` : "—"}</td>
-              <td>{s.state} (puff {s.puff_count})</td>
+              <td className="n">{s.t.toFixed(1)}초</td>
+              <td className="n">{s.cig?.toFixed(2)}</td>
+              <td className="n">{s.mouth_cig?.toFixed(2)}</td>
+              <td className="n">{s.smoke?.toFixed(2)}</td>
+              <td className="n">{s.combined?.toFixed(2)}</td>
+              <td>{s.smoking_frame ? "흡연" : <span className="faint">—</span>}</td>
+              <td className="n">{s.ratio !== null ? `${Math.round(s.ratio * 100)}%` : "—"}</td>
+              <td>{s.state} · puff {s.puff_count}</td>
             </tr>
           ))}
         </tbody>

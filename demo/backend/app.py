@@ -55,8 +55,10 @@ CIGARETTE_MODEL = os.environ.get("NOSMOKING_CIGARETTE_MODEL", str(REPO_ROOT / "c
 DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
 FIRST_MP3 = str(REPO_ROOT / "assets" / "audio" / "first_announce.mp3")
 SECOND_MP3 = str(REPO_ROOT / "assets" / "audio" / "second_announce.mp3")
-CAMERA_CONFIG_PATH = Path(__file__).resolve().parent / "data" / "cameras.json"  # 등록한 카메라(설정만, 커밋 안 함)
-EVENT_DB_PATH = Path(__file__).resolve().parent / "data" / "events.db"           # 판정 기록(숫자만, 커밋 안 함)
+DATA_DIR = Path(__file__).resolve().parent / "data"
+# 등록한 카메라(설정만)와 판정 기록(숫자만). 둘 다 커밋하지 않는다. 시험용으로 따로 쓰려면 환경 변수로 바꾼다.
+CAMERA_CONFIG_PATH = Path(os.environ.get("NOSMOKING_CAMERA_CONFIG", DATA_DIR / "cameras.json"))
+EVENT_DB_PATH = Path(os.environ.get("NOSMOKING_EVENT_DB", DATA_DIR / "events.db"))
 CAMERA_INDEXES = (0, 1, 2, 3)  # macOS는 아이폰 연속성 카메라가 0번으로 잡힐 수 있어 고를 수 있게 한다
 MAX_KEPT_JOBS = 10   # 메모리에 결과를 들고 있을 최근 분석 수 (숫자 결과만, 영상 없음)
 

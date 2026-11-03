@@ -23,65 +23,81 @@ interface Props {
 }
 
 const SYNC_ID = "track-timeline";
-const DIST_AXIS_MAX = 3; // 손-입 거리 축 상한. 손을 내리고 있으면 2~4가 흔해서, 그 이상은 위쪽 끝에 붙여 그린다
+// 손-입 거리 축 상한: 이 사람의 거리 값 95%가 들어가는 정수(2~5). 그보다 큰 값은 위쪽 끝에 붙여 그린다
+function distAxisMax(samples: TrackSample[]): number {
+  const values = samples.map((s) => s.dist).filter((v): v is number => v !== null).sort((a, b) => a - b);
+  if (values.length === 0) return 3;
+  const p95 = values[Math.min(values.length - 1, Math.floor(values.length * 0.95))];
+  return Math.min(5, Math.max(2, Math.ceil(p95)));
+}
 const CHART_MARGIN = { top: 8, right: 16, bottom: 4, left: 0 };
 
 type DotShape = "circle" | "triangle" | "square";
 
+// 색은 차트당 하나: 확정으로 이어지는 핵심 증거인 "입 근처 담배"만 브랜드 색, 나머지는 검정·회색과 모양으로 구분
 const CONFIDENCE_SERIES: { key: keyof TrackSample; label: string; color: string; shape: DotShape }[] = [
-  { key: "cig", label: "담배 (최고)", color: "var(--series-1)", shape: "circle" },
-  { key: "smoke", label: "연기 (최고)", color: "var(--series-2)", shape: "triangle" },
-  { key: "mouth_cig", label: "입 근처 담배", color: "var(--series-3)", shape: "square" },
+  { key: "mouth_cig", label: "입 근처 담배", color: "var(--accent)", shape: "square" },
+  { key: "cig", label: "담배 (어디서든)", color: "var(--text)", shape: "circle" },
+  { key: "smoke", label: "연기", color: "var(--faint)", shape: "triangle" },
 ];
+const TICK = { fill: "var(--faint)", fontSize: 12 };
 
 export default function Timeline({ samples, events, params, durationSec }: Props) {
   const xDomain: [number, number] = [0, Math.max(durationSec, 1)];
   // ②·③은 2차 확인을 돌린 순간에만 값이 있다. 그 순간만 모아야 툴팁이 빈 프레임을 짚지 않는다.
   const checked = samples.filter((s) => s.checked);
+  const distMax = distAxisMax(samples);
   const confirmTimes = events.filter((e) => e.kind === "confirmed").map((e) => e.time);
   const announceEvents = events.filter((e) => e.kind === "announced");
 
   // 세 패널에 공통으로 그리는 이벤트 표시선
   const eventLines = [
     ...confirmTimes.map((t) => (
-      <ReferenceLine key={`c${t}`} x={t} stroke="var(--status-critical)" strokeWidth={2}
-        label={{ value: "🔔 확정", position: "insideTopRight", fill: "var(--text-secondary)", fontSize: 12 }} />
+      <ReferenceLine key={`c${t}`} x={t} stroke="var(--text)" strokeWidth={1}
+        label={{ value: "확정", position: "insideTopRight", fill: "var(--text)", fontSize: 12 }} />
     )),
     ...announceEvents.map((e) => (
-      <ReferenceLine key={`a${e.time}`} x={e.time} stroke="var(--text-muted)" strokeDasharray="2 3"
-        label={{ value: `📢 ${e.detail}`, position: "insideBottomRight", fill: "var(--text-secondary)", fontSize: 12 }} />
+      <ReferenceLine key={`a${e.time}`} x={e.time} stroke="var(--faint)" strokeDasharray="3 3"
+        label={{ value: `${e.detail} 안내`, position: "insideBottomRight", fill: "var(--muted)", fontSize: 12 }} />
     )),
   ];
 
   const xAxis = (
     <XAxis
       type="number" dataKey="t" domain={xDomain} tickFormatter={(v: number) => `${v.toFixed(0)}s`}
-      stroke="var(--axis)" tick={{ fill: "var(--text-muted)", fontSize: 12 }}
+      stroke="var(--border)" tickLine={false} tick={TICK}
     />
   );
   const grid = <CartesianGrid stroke="var(--grid)" vertical={false} />;
+  const yAxisStyle = { axisLine: false, tickLine: false, tick: TICK, width: 40 } as const;
 
   return (
     <div>
-      <div className="chart-panel">
-        <h3>① 손-입 거리 <span className="muted">어깨너비로 정규화 · 기준선 아래로 1~6초 머물렀다 벗어나면 puff 1회</span></h3>
+      <div className="chart">
+        <div className="chart-head">
+          <h3>손-입 거리</h3>
+          <span className="note">어깨너비로 나눈 값 · 기준선 아래로 1~6초 머물렀다 벗어나면 puff 1회</span>
+        </div>
         <ResponsiveContainer width="100%" height={160}>
           <LineChart data={samples} syncId={SYNC_ID} syncMethod="value" margin={CHART_MARGIN}>
             {grid}
             {xAxis}
-            <YAxis domain={[0, DIST_AXIS_MAX]} allowDataOverflow stroke="var(--axis)" tick={{ fill: "var(--text-muted)", fontSize: 12 }} width={44} />
-            <ReferenceLine y={params.near_threshold} stroke="var(--text-muted)" strokeDasharray="4 4"
-              label={{ value: `기준 ${params.near_threshold}`, position: "insideTopLeft", fill: "var(--text-muted)", fontSize: 12 }} />
+            <YAxis domain={[0, distMax]} ticks={Array.from({ length: distMax + 1 }, (_, i) => i)} allowDataOverflow {...yAxisStyle} />
+            <ReferenceLine y={params.near_threshold} stroke="var(--faint)" strokeDasharray="4 4"
+              label={{ value: `기준 ${params.near_threshold}`, position: "insideBottomRight", fill: "var(--muted)", fontSize: 12 }} />
             {eventLines}
-            <Line dataKey="dist" stroke="var(--series-1)" strokeWidth={2} dot={false} isAnimationActive={false} />
+            <Line dataKey="dist" stroke="var(--text)" strokeWidth={1.5} dot={false} isAnimationActive={false} />
             <Tooltip content={<SampleTooltip fields={["dist", "puff_count", "state"]} />} />
           </LineChart>
         </ResponsiveContainer>
       </div>
 
-      <div className="chart-panel">
-        <h3>② 2차 확인 신뢰도 <span className="muted">확인한 순간({checked.length}회) 중 검출된 것만 점으로 표시</span></h3>
-        <div className="legend">
+      <div className="chart">
+        <div className="chart-head">
+          <h3>2차 확인 신뢰도</h3>
+          <span className="note">확인한 {checked.length}번 중 검출된 것만 점으로 표시</span>
+        </div>
+        <div className="legend" style={{ marginBottom: 4 }}>
           {CONFIDENCE_SERIES.map((s) => (
             <span key={s.key} className="key">
               <svg width="12" height="12"><Marker shape={s.shape} cx={6} cy={6} color={s.color} /></svg>
@@ -93,9 +109,9 @@ export default function Timeline({ samples, events, params, durationSec }: Props
           <LineChart data={checked} syncId={SYNC_ID} syncMethod="value" margin={CHART_MARGIN}>
             {grid}
             {xAxis}
-            <YAxis domain={[0, 1]} stroke="var(--axis)" tick={{ fill: "var(--text-muted)", fontSize: 12 }} width={44} />
-            <ReferenceLine y={params.mouth_cig_conf_threshold} stroke="var(--text-muted)" strokeDasharray="4 4"
-              label={{ value: `입 근처 담배 기준 ${params.mouth_cig_conf_threshold}`, position: "insideTopLeft", fill: "var(--text-muted)", fontSize: 12 }} />
+            <YAxis domain={[0, 1]} ticks={[0, 0.25, 0.5, 0.75, 1]} {...yAxisStyle} />
+            <ReferenceLine y={params.mouth_cig_conf_threshold} stroke="var(--faint)" strokeDasharray="4 4"
+              label={{ value: `입 근처 담배 기준 ${params.mouth_cig_conf_threshold}`, position: "insideBottomRight", fill: "var(--muted)", fontSize: 12 }} />
             {eventLines}
             {CONFIDENCE_SERIES.map((s) => (
               <Line key={s.key} dataKey={s.key} stroke="none" isAnimationActive={false} activeDot={false}
@@ -106,18 +122,20 @@ export default function Timeline({ samples, events, params, durationSec }: Props
         </ResponsiveContainer>
       </div>
 
-      <div className="chart-panel">
-        <h3>③ 시간 필터 판정 비율 <span className="muted">최근 10초 중 "흡연" 판정 비율 · 기준 이상이면 이벤트 확정</span></h3>
+      <div className="chart">
+        <div className="chart-head">
+          <h3>10초 판정 비율</h3>
+          <span className="note">최근 10초 중 흡연으로 판정한 비율 · 기준선을 넘으면 이벤트 확정</span>
+        </div>
         <ResponsiveContainer width="100%" height={160}>
           <LineChart data={checked} syncId={SYNC_ID} syncMethod="value" margin={CHART_MARGIN}>
             {grid}
             {xAxis}
-            <YAxis domain={[0, 1]} tickFormatter={(v: number) => `${Math.round(v * 100)}%`} stroke="var(--axis)"
-              tick={{ fill: "var(--text-muted)", fontSize: 12 }} width={44} />
-            <ReferenceLine y={params.event_confirm_ratio} stroke="var(--text-muted)" strokeDasharray="4 4"
-              label={{ value: `확정 기준 ${Math.round(params.event_confirm_ratio * 100)}%`, position: "insideTopLeft", fill: "var(--text-muted)", fontSize: 12 }} />
+            <YAxis domain={[0, 1]} ticks={[0, 0.25, 0.5, 0.75, 1]} tickFormatter={(v: number) => `${Math.round(v * 100)}%`} {...yAxisStyle} />
+            <ReferenceLine y={params.event_confirm_ratio} stroke="var(--faint)" strokeDasharray="4 4"
+              label={{ value: `확정 기준 ${Math.round(params.event_confirm_ratio * 100)}%`, position: "insideTopRight", fill: "var(--muted)", fontSize: 12 }} />
             {eventLines}
-            <Line dataKey="ratio" type="stepAfter" stroke="var(--series-1)" strokeWidth={2} dot={false} isAnimationActive={false} />
+            <Line dataKey="ratio" type="stepAfter" stroke="var(--accent)" strokeWidth={2} dot={false} isAnimationActive={false} />
             <Tooltip content={<SampleTooltip fields={["ratio", "smoking_frame"]} />} />
           </LineChart>
         </ResponsiveContainer>
@@ -148,7 +166,7 @@ function renderDot(props: DotProps, shape: DotShape, color: string) {
 function Marker({ shape, cx, cy, color }: { shape: DotShape; cx: number; cy: number; color: string }) {
   const r = 4;
   // 겹친 점이 구분되도록 배경색 테두리(링)를 두른다
-  const common = { fill: color, stroke: "var(--surface-1)", strokeWidth: 1.5 };
+  const common = { fill: color, stroke: "var(--surface)", strokeWidth: 1.5 };
   if (shape === "triangle") {
     return <polygon points={`${cx},${cy - r - 1} ${cx - r - 1},${cy + r} ${cx + r + 1},${cy + r}`} {...common} />;
   }
@@ -186,11 +204,11 @@ function SampleTooltip({ active, payload, fields }: TooltipProps<number, string>
   const sample = payload[0].payload as TrackSample;
   return (
     <div className="chart-tooltip">
-      <div className="label">{sample.t.toFixed(1)}초</div>
+      <span>{sample.t.toFixed(1)}초</span>
       {fields.map((key) => (
-        <div key={key} className="row">
-          <span className="value">{formatField(key, sample[key])}</span>
-          <span className="label">{FIELD_LABELS[key]}</span>
+        <div key={key} className="row-line">
+          <b>{formatField(key, sample[key])}</b>
+          <span>{FIELD_LABELS[key]}</span>
         </div>
       ))}
     </div>

@@ -36,3 +36,6 @@ demo/frontend/dist/
 
 # 웹 데모 백엔드 설정 (등록한 카메라 주소에 비밀번호가 들어갈 수 있음)
 demo/backend/data/
+
+# design-taste-frontend 스킬의 작업 파일(검사 스크린샷 등)
+.taste-skill/
