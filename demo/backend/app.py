@@ -46,6 +46,7 @@ import pipeline  # noqa: E402
 from pipeline import SmokingPipeline  # noqa: E402
 from video_analysis import analyze_video, summarize_track  # noqa: E402
 
+from .event_log import EventLog  # noqa: E402
 from .camera_source import NetworkCamera, SourceError, mask_credentials, open_local_camera, validate_network_url  # noqa: E402
 from .live import LiveSession  # noqa: E402
 
@@ -55,6 +56,7 @@ DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
 FIRST_MP3 = str(REPO_ROOT / "assets" / "audio" / "first_announce.mp3")
 SECOND_MP3 = str(REPO_ROOT / "assets" / "audio" / "second_announce.mp3")
 CAMERA_CONFIG_PATH = Path(__file__).resolve().parent / "data" / "cameras.json"  # 등록한 카메라(설정만, 커밋 안 함)
+EVENT_DB_PATH = Path(__file__).resolve().parent / "data" / "events.db"           # 판정 기록(숫자만, 커밋 안 함)
 CAMERA_INDEXES = (0, 1, 2, 3)  # macOS는 아이폰 연속성 카메라가 0번으로 잡힐 수 있어 고를 수 있게 한다
 MAX_KEPT_JOBS = 10   # 메모리에 결과를 들고 있을 최근 분석 수 (숫자 결과만, 영상 없음)
 
@@ -325,7 +327,12 @@ async def live_start(req: LiveStartRequest):
         POSE_MODEL, CIGARETTE_MODEL, device=DEVICE, pose_imgsz=req.pose_imgsz,
         first_mp3=FIRST_MP3, second_mp3=SECOND_MP3, play_audio=req.play_audio, verbose=False,
     )
-    _live = LiveSession(cap, pipe, mirror=mirror, source_label=label)
+    settings = {
+        "cigarette_model": Path(CIGARETTE_MODEL).name,
+        "pose_imgsz": req.pose_imgsz,
+        **_DEFAULT_PARAMS,
+    }
+    _live = LiveSession(cap, pipe, mirror=mirror, source_label=label, event_log=_event_log, settings=settings)
     _live.start()
     return _live.state()
 
@@ -364,3 +371,34 @@ def live_stream():
             yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
 
     return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+
+# ======================================================================
+# 판정 기록 (실시간 감지의 이벤트 확정 1건당 1줄, 숫자만)
+# ======================================================================
+_event_log = EventLog(EVENT_DB_PATH)
+
+
+class FeedbackRequest(BaseModel):
+    value: Optional[str] = None   # "correct"(맞음) / "wrong"(틀림) / null(취소)
+
+
+@app.get("/api/events")
+def list_events(date_from: Optional[str] = None, date_to: Optional[str] = None,
+                source: Optional[str] = None, feedback: Optional[str] = None):
+    return {
+        "events": _event_log.list(date_from, date_to, source, feedback),
+        "sources": _event_log.sources(),
+        "summary": _event_log.summary(),
+    }
+
+
+@app.post("/api/events/{event_id}/feedback")
+def set_event_feedback(event_id: int, req: FeedbackRequest):
+    try:
+        found = _event_log.set_feedback(event_id, req.value)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+    if not found:
+        raise HTTPException(404, "해당 기록이 없습니다.")
+    return {"ok": True, "summary": _event_log.summary()}

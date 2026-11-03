@@ -15,13 +15,14 @@ from __future__ import annotations
 
 import threading
 import time
+import uuid
 from collections import deque
 from typing import Optional
 
 import cv2
 
 from overlay import render_overlay
-from pipeline import SmokingPipeline
+from pipeline import EVENT_ANNOUNCED, EVENT_CONFIRMED, SmokingPipeline
 
 IDLE_TIMEOUT_SEC = 10.0      # 화면을 보는 곳이 이 시간 이상 없으면 자동 정지
 JPEG_QUALITY = 80            # 화면 표시용 JPEG 품질
@@ -36,11 +37,16 @@ class LiveSession:
     (camera_source.NetworkCamera). 둘 다 read()/release()가 있다. macOS는 카메라 권한 요청을
     메인 스레드에서 해야 해서, 카메라 열기는 호출하는 쪽(요청 처리 이벤트 루프)에서 한다.
     source_label은 화면·기록에 보여줄 카메라 이름이다.
+    event_log가 있으면 이벤트 확정·방송을 판정 근거와 함께 기록한다(숫자만, settings는 당시 설정).
     """
 
-    def __init__(self, cap, pipe: SmokingPipeline, mirror: bool = True, source_label: str = ""):
+    def __init__(self, cap, pipe: SmokingPipeline, mirror: bool = True, source_label: str = "",
+                 event_log=None, settings: Optional[dict] = None):
         self._cap = cap
         self.source_label = source_label
+        self.session_id = uuid.uuid4().hex[:8]   # 기록에서 "같은 세션의 같은 사람"을 묶는 데만 쓴다
+        self._event_log = event_log
+        self._settings = settings or {}
         self.note: Optional[str] = None   # "재연결 중" 같은 일시적인 안내
         self._pipe = pipe
         self._mirror = mirror   # 웹캠은 셀카처럼 좌우 반전 (motion_detector.py와 같음)
@@ -150,6 +156,7 @@ class LiveSession:
                         self._frame_id += 1
                     self._people = people
                     for e in result.events:
+                        self._record(e)
                         self._events.appendleft({
                             "clock": time.strftime("%H:%M:%S"),
                             "track_id": e.track_id,
@@ -165,6 +172,20 @@ class LiveSession:
             with self._new_frame:
                 self._latest_jpeg = None   # 세션이 끝나면 마지막 프레임도 지운다
                 self._new_frame.notify_all()
+
+    def _record(self, event):
+        """판정 기록에 남긴다. 기록이 실패해도 실시간 감지는 멈추지 않는다."""
+        if self._event_log is None:
+            return
+        try:
+            if event.kind == EVENT_CONFIRMED:
+                self._event_log.record_confirmed(
+                    self.source_label, self.session_id, event.track_id, event.evidence or {}, self._settings,
+                )
+            elif event.kind == EVENT_ANNOUNCED:
+                self._event_log.mark_announced(self.session_id, event.track_id, event.detail)
+        except Exception as e:
+            print(f"[경고] 판정 기록 실패: {e}")
 
     def _person_state(self, person) -> dict:
         tid = person.track_id

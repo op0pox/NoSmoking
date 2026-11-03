@@ -241,3 +241,17 @@ label.inline { flex-direction: row; align-items: center; gap: 6px; }
 .camera-list { list-style: none; padding: 0; margin: 8px 0 16px; }
 .camera-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--grid); }
 input[type="text"] { padding: 6px 8px; border: 1px solid var(--axis); border-radius: 6px; background: var(--surface-1); color: var(--text-primary); }
+
+/* 판정 기록 */
+.stat-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-top: 16px; }
+.stat .stat-label { font-size: 13px; color: var(--text-secondary); }
+.stat .stat-value { font-size: 32px; font-weight: 700; line-height: 1.2; margin: 4px 0; }
+.filter-row { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-top: 16px; padding: 12px 16px; }
+.segmented { display: inline-flex; border: 1px solid var(--axis); border-radius: 6px; overflow: hidden; }
+.segmented button { background: transparent; color: var(--text-secondary); border-radius: 0; padding: 6px 12px; font-weight: 500; }
+.segmented button.active { background: var(--brand-soft); color: var(--text-primary); font-weight: 600; }
+.evidence { min-width: 280px; }
+.feedback-buttons { display: flex; gap: 6px; white-space: nowrap; }
+.fb { padding: 4px 10px; font-size: 13px; background: transparent; border: 1px solid var(--axis); color: var(--text-secondary); font-weight: 500; }
+.fb.correct.active { background: var(--status-good); border-color: var(--status-good); color: #fff; }
+.fb.wrong.active { background: var(--status-critical); border-color: var(--status-critical); color: #fff; }

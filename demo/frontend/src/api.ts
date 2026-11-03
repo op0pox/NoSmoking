@@ -200,3 +200,65 @@ export async function stopLive(): Promise<void> {
 export async function fetchLiveState(): Promise<LiveState> {
   return parseJson(await fetch("/api/live/state"));
 }
+
+// ---------------------------------------------------------------------------
+// 판정 기록 (demo/backend/event_log.py) — 실시간 감지의 이벤트 확정 1건당 1줄, 숫자만
+
+export interface EventEvidence {
+  ratio: number;                        // 최근 10초 흡연 판정 비율
+  checks: number;                       // 그동안 2차 확인 횟수
+  smoking_frames: number;               // 그중 "흡연" 판정 수
+  path_counts: Record<string, number>;  // 판정 경로별 횟수 (한 번에 여러 경로를 통과할 수 있음)
+  puff_count: number;
+  max_cig: number;
+  max_smoke: number;
+  max_mouth_cig: number;
+}
+
+export interface EventRecord {
+  id: number;
+  created_at: string;            // 로컬 시각 ISO (예: 2026-11-03T09:28:03)
+  source_label: string;          // 카메라(설치 위치) 이름
+  session_id: string;
+  track_id: number;              // 세션 안의 임시 사람 번호
+  first_announced: boolean;
+  second_announced: boolean;
+  evidence: EventEvidence;
+  settings: Record<string, string | number>;
+  feedback: "correct" | "wrong" | null;
+  feedback_at: string | null;
+}
+
+export interface EventSummary {
+  total: number;
+  announced: number;
+  correct: number;
+  wrong: number;
+  unreviewed: number;
+  field_precision: number | null;   // 맞음 / (맞음 + 틀림)
+}
+
+export interface EventFilters {
+  dateFrom?: string;   // YYYY-MM-DD
+  dateTo?: string;
+  source?: string;
+  feedback?: "correct" | "wrong" | "none";
+}
+
+export async function fetchEvents(filters: EventFilters): Promise<{ events: EventRecord[]; sources: string[]; summary: EventSummary }> {
+  const query = new URLSearchParams();
+  if (filters.dateFrom) query.set("date_from", filters.dateFrom);
+  if (filters.dateTo) query.set("date_to", filters.dateTo);
+  if (filters.source) query.set("source", filters.source);
+  if (filters.feedback) query.set("feedback", filters.feedback);
+  return parseJson(await fetch(`/api/events?${query}`));
+}
+
+export async function setEventFeedback(id: number, value: "correct" | "wrong" | null): Promise<EventSummary> {
+  const body = await parseJson<{ summary: EventSummary }>(await fetch(`/api/events/${id}/feedback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ value }),
+  }));
+  return body.summary;
+}
