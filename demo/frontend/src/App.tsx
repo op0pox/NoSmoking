@@ -2,6 +2,7 @@ import { NavLink, Route, Routes } from "react-router-dom";
 import AnalyzePage from "./pages/AnalyzePage";
 import HomePage from "./pages/HomePage";
 import LivePage from "./pages/LivePage";
+import RecordsPage from "./pages/RecordsPage";
 
 // 모든 페이지 위에 고정되는 메뉴. 홈을 거치지 않고도 페이지를 오갈 수 있다.
 export default function App() {
@@ -13,6 +14,7 @@ export default function App() {
           <NavLink to="/" end>홈</NavLink>
           <NavLink to="/live">실시간</NavLink>
           <NavLink to="/analyze">영상 분석</NavLink>
+          <NavLink to="/records">기록</NavLink>
         </nav>
       </header>
       <main>
@@ -20,6 +22,7 @@ export default function App() {
           <Route path="/" element={<HomePage />} />
           <Route path="/live" element={<LivePage />} />
           <Route path="/analyze" element={<AnalyzePage />} />
+          <Route path="/records" element={<RecordsPage />} />
         </Routes>
       </main>
     </>

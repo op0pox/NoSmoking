@@ -84,6 +84,13 @@ MOUTH_CIG_CONF_THRESHOLD = 0.5  # 입 근처 담배가 이 신뢰도 이상이�
 EVENT_CONFIRMED = "confirmed"   # 시간 필터가 미확정 → 확정으로 바뀐 순간
 EVENT_ANNOUNCED = "announced"   # 안내 방송이 나간 순간 (detail: "1차" / "2차")
 
+# 프레임을 "흡연"으로 판정한 경로 이름 (판정 근거 기록·화면 표시용)
+PATH_MOUTH_CIG = "입 근처 담배"
+PATH_CIG_SMOKE = "담배+연기"
+PATH_CIG_MOTION = "담배+모션"
+PATH_SMOKE_MOTION = "연기+모션"
+PATH_HIGH_CONF = "고신뢰도 단독"
+
 
 def _pair_score(a: float, b: float) -> float:
     """두 신호(0~1)의 기하평균. 하나라도 0이면 0 —
@@ -151,6 +158,10 @@ class PipelineEvent:
     track_id: int
     kind: str        # EVENT_CONFIRMED / EVENT_ANNOUNCED
     detail: str = ""
+    # 이벤트 확정 때만: 최근 10초의 판정 근거(숫자만). 판정 기록·민원 설명용
+    # {"ratio", "checks", "smoking_frames", "path_counts": {경로: 횟수}, "puff_count",
+    #  "max_cig", "max_smoke", "max_mouth_cig"}
+    evidence: Optional[dict] = None
 
 
 @dataclass
@@ -200,6 +211,7 @@ class SmokingPipeline:
         self.last_object_check: dict = {}   # 마지막으로 2차 확인을 돌린 시각 (주기 실행용)
         self.object_signal_hold: dict = {}  # {클래스명: (conf, 감지시각)} (_held_conf용)
         self.high_conf_hits: dict = {}      # 고신뢰도 검출 시각 deque (지속성 판정용)
+        self.recent_checks: dict = {}       # 최근 10초 2차 확인 결과 deque (확정 근거 기록용)
 
     def _log(self, message: str):
         if self.verbose:
@@ -239,7 +251,10 @@ class SmokingPipeline:
                     confirmed_now = self._check_object(frame, person, now)
                     if confirmed_now:
                         ef = self.event_filters[track_id]
-                        events.append(PipelineEvent(now, track_id, EVENT_CONFIRMED, f"{ef.last_ratio:.0%}"))
+                        events.append(PipelineEvent(
+                            now, track_id, EVENT_CONFIRMED, f"{ef.last_ratio:.0%}",
+                            evidence=self._evidence_summary(track_id, detector, ef.last_ratio, now),
+                        ))
                 persons.append(person)
 
         # 이번 프레임에 안 보인 track에도 update(None)을 줘서 유예시간 로직이 돌게 한다
@@ -348,12 +363,13 @@ class SmokingPipeline:
                 cig_conf if cig_conf >= HIGH_CONFIDENCE_THRESHOLD else 0.0,
                 smoke_conf if smoke_conf >= HIGH_CONFIDENCE_THRESHOLD else 0.0,
             )
-        combined = max(
-            _pair_score(held_cig_long, held_smoke_long),
-            _pair_score(_at_least(held_cig_short, MOTION_PAIR_MIN_CONF), motion_score),
-            _pair_score(_at_least(held_smoke_short, MOTION_PAIR_MIN_CONF), motion_score),
-            high_conf_bypass,
-        )
+        path_scores = {
+            PATH_CIG_SMOKE: _pair_score(held_cig_long, held_smoke_long),
+            PATH_CIG_MOTION: _pair_score(_at_least(held_cig_short, MOTION_PAIR_MIN_CONF), motion_score),
+            PATH_SMOKE_MOTION: _pair_score(_at_least(held_smoke_short, MOTION_PAIR_MIN_CONF), motion_score),
+            PATH_HIGH_CONF: high_conf_bypass,
+        }
+        combined = max(path_scores.values())
 
         # 크롭 좌표 -> 원본 프레임 좌표로 변환 (화면에는 이번 프레임에 실제로 검출된 것만 그린다)
         for cls_name, det_info in obj_result.items():
@@ -381,14 +397,44 @@ class SmokingPipeline:
             self.event_filters[track_id] = ef
         was_confirmed = ef.confirmed
         # 흡연 프레임 판정: 두 증거의 짝(combined) 또는 입 근처 담배 단독
-        is_smoking_frame = combined >= COMBINED_CONFIRM_THRESHOLD or mouth_cig_conf >= MOUTH_CIG_CONF_THRESHOLD
+        passed_paths = [name for name, score in path_scores.items() if score >= COMBINED_CONFIRM_THRESHOLD]
+        if mouth_cig_conf >= MOUTH_CIG_CONF_THRESHOLD:
+            passed_paths.insert(0, PATH_MOUTH_CIG)
+        is_smoking_frame = bool(passed_paths)
         ef.update(now, is_smoking_frame)
+        self._remember_check(track_id, now, passed_paths, cig_conf, smoke_conf, mouth_cig_conf)
         confirmed_now = ef.confirmed and not was_confirmed
         if confirmed_now:
             self._log(
                 f"track {track_id}: 🔔 이벤트 확정 (최근 {EVENT_WINDOW_SEC:.0f}s 판정 비율 {ef.last_ratio:.0%})"
             )
         return confirmed_now
+
+    def _remember_check(self, track_id: int, now: float, passed_paths: list,
+                        cig: float, smoke: float, mouth_cig: float):
+        """이벤트 확정 때 근거로 쓰려고 최근 EVENT_WINDOW_SEC 동안의 2차 확인 결과를 남긴다."""
+        history = self.recent_checks.setdefault(track_id, deque())
+        history.append((now, passed_paths, cig, smoke, mouth_cig))
+        while history and now - history[0][0] > EVENT_WINDOW_SEC:
+            history.popleft()
+
+    def _evidence_summary(self, track_id: int, detector: SmokingMotionDetector, ratio: float, now: float) -> dict:
+        """최근 10초 동안 어떤 경로로 몇 번 "흡연" 판정이 났는지 등 확정 근거를 숫자로 모은다."""
+        history = [h for h in self.recent_checks.get(track_id, ()) if now - h[0] <= EVENT_WINDOW_SEC]
+        path_counts: dict = {}
+        for _, paths, *_ in history:
+            for name in paths:
+                path_counts[name] = path_counts.get(name, 0) + 1
+        return {
+            "ratio": round(ratio, 3),
+            "checks": len(history),
+            "smoking_frames": sum(1 for _, paths, *_ in history if paths),
+            "path_counts": path_counts,
+            "puff_count": detector.puff_count,
+            "max_cig": round(max((h[2] for h in history), default=0.0), 3),
+            "max_smoke": round(max((h[3] for h in history), default=0.0), 3),
+            "max_mouth_cig": round(max((h[4] for h in history), default=0.0), 3),
+        }
 
     def _crop_region(self, person: PersonResult, frame_shape: tuple) -> tuple:
         """2차 확인에 넣을 영역 (x1, y1, x2, y2)을 원본 프레임 좌표로 반환한다.
@@ -461,3 +507,4 @@ class SmokingPipeline:
             self.last_object_check.pop(tid, None)
             self.object_signal_hold.pop(tid, None)
             self.high_conf_hits.pop(tid, None)
+            self.recent_checks.pop(tid, None)
