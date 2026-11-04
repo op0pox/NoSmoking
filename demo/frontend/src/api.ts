@@ -134,6 +134,7 @@ export interface LivePerson {
   mouth_cig: number | null;
   ratio: number | null;
   confirmed: boolean;
+  recent: boolean[];             // 최근 10초의 2차 확인 결과, 시간 순서 (true = 흡연 판정)
   announcer_state: string | null; // IDLE / FIRST_ANNOUNCED / COOLDOWN
 }
 

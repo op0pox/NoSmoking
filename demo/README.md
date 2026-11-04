@@ -63,6 +63,30 @@ npm run dev
 5. 카메라(앱)를 잠깐 껐다 켜서 "다시 연결하는 중…" 안내 뒤 화면이 돌아오는지 확인한다
 - 실시간이 켜져 있는 동안에는 영상 분석을 할 수 없다(같은 모델·GPU를 쓰므로).
 
+## 화면 디자인 규칙
+
+`.agents/skills/design-taste-frontend` 스킬의 앱 화면 규칙과 "Achromatic ledger" 스타일을 따른다.
+
+- 화면 틀(메뉴·카드·버튼)에는 색을 쓰지 않는다. 주요 버튼은 화면마다 하나, 거의 검정
+- 브랜드 색(다홍빛 주황, `--accent`)은 제품 마크와 화면의 핵심 데이터 하나(판정 비율, 입 근처 담배, 확정 구간)에만
+- 상태(확정·맞음·틀림)는 옅은 바탕 + 같은 계열의 진한 글자, 항상 글자와 함께. 이모지는 쓰지 않는다
+- 숫자 묶음은 하나의 상자를 세로선으로 나눈 형태(아이콘·타일 없음), 표의 숫자는 오른쪽 정렬
+- 글꼴: Pretendard (OFL-1.1, `pretendard` 패키지)
+- 제품 고유 요소: **10초 판정 창** — 최근 2차 확인 결과를 칸으로 그리고 확정 기준(60%)에 선을 긋는다 (`WindowStrip`)
+- 라이트/다크: 사이드바 아래 버튼, 또는 주소에 `?theme=light` / `?theme=dark`
+- 예외: 브랜드 색(테라코타 계열)과 홈 배너는 직접 고른 브랜드 자산이라 스킬 규칙의 예외로 유지
+
+검사(선택): 미리보기를 띄운 뒤 `node .agents/skills/design-taste-frontend/scripts/inspect.mjs --app --allow palette-terracotta "http://127.0.0.1:4173/?theme=light"`
+
+## 시험용 설정 (환경 변수)
+
+| 변수 | 기본값 | 용도 |
+|---|---|---|
+| `NOSMOKING_BACKEND_URL` | `http://127.0.0.1:8000` | 프론트엔드 개발·미리보기 서버가 `/api`를 넘길 백엔드 |
+| `NOSMOKING_EVENT_DB` | `demo/backend/data/events.db` | 판정 기록 파일 (시험 기록을 실제 기록과 분리할 때) |
+| `NOSMOKING_CAMERA_CONFIG` | `demo/backend/data/cameras.json` | 등록한 카메라 파일 |
+| `NOSMOKING_CIGARETTE_MODEL` | `cigarette-v5-best.pt` | 담배·연기 모델 |
+
 ## 구성
 
 | 경로 | 내용 |
@@ -71,7 +95,8 @@ npm run dev
 | `backend/live.py` | 실시간 세션: 카메라 읽기 → 판정 → 화면 그리기(`edge/overlay.py`) → MJPEG |
 | `backend/event_log.py` | 판정 기록 저장소(SQLite): 확정 기록·방송 여부·피드백·요약 |
 | `backend/camera_source.py` | 입력 소스: 이 PC 카메라 / 네트워크 카메라(사설 IP 확인, 최신 프레임만, 자동 재연결) |
-| `frontend/src/pages/` | 홈, 실시간, 영상 분석, 기록 |
+| `frontend/src/pages/` | 홈, 실시간, 판정 기록, 영상 분석 |
+| `frontend/src/components/WindowStrip.tsx` | 10초 판정 창 (실시간·기록 공용) |
 | `frontend/src/components/Timeline.tsx` | 사람별 3단 타임라인 (손-입 거리 / 2차 확인 신뢰도 / 시간 필터 비율) |
 | `frontend/src/api.ts` | 백엔드 응답 타입 (파이썬 dataclass와 필드 이름을 맞춘다) |
 

@@ -81,19 +81,18 @@ export default function VideoReview({ file, expectedFileName, onPickFile, result
 
   if (!videoUrl) {
     return (
-      <div className="video-review">
-        <label>
-          분석한 영상 파일을 다시 고르면 결과를 영상 위에서 볼 수 있어요 (업로드되지 않고 이 브라우저에서만 재생)
-          <input type="file" accept="video/*" onChange={(e) => e.target.files?.[0] && onPickFile(e.target.files[0])} />
-        </label>
-      </div>
+      <label className="field">
+        <span>분석한 영상 파일을 다시 고르면 결과를 영상 위에서 볼 수 있습니다</span>
+        <input className="input" type="file" accept="video/*" onChange={(e) => e.target.files?.[0] && onPickFile(e.target.files[0])} />
+        <span className="hint">다시 업로드하지 않고 이 브라우저 안에서만 재생합니다.</span>
+      </label>
     );
   }
 
   return (
     <div className="video-review">
       {file && file.name !== expectedFileName && (
-        <p className="error">⚠️ 고른 파일({file.name})이 분석한 파일({expectedFileName})과 이름이 다릅니다. 표시가 맞지 않을 수 있어요.</p>
+        <p className="error" style={{ marginBottom: 12 }}>고른 파일({file.name})이 분석한 파일({expectedFileName})과 이름이 다릅니다. 표시가 맞지 않을 수 있어요.</p>
       )}
       <div className="video-stage">
         <video ref={videoRef} src={videoUrl} controls playsInline />
@@ -101,10 +100,10 @@ export default function VideoReview({ file, expectedFileName, onPickFile, result
         <canvas ref={canvasRef} />
       </div>
 
-      <div className="segment-legend">
-        <span className="key"><span className="swatch confirmed" /> 이벤트 확정 구간</span>
+      <div className="legend" style={{ marginTop: 12 }}>
+        <span className="key"><span className="swatch accent" /> 이벤트 확정 구간</span>
         <span className="key"><span className="swatch tick" /> 흡연 판정 순간</span>
-        <span className="muted">막대를 누르면 그 시각으로 이동합니다</span>
+        <span>영상 위: 흰 박스 보통 · 노란 박스 흡연 의심 · 빨간 박스 이벤트 확정 · 굵은 테두리는 표에서 고른 사람</span>
       </div>
       <div
         className="segment-bar"
@@ -135,8 +134,8 @@ export default function VideoReview({ file, expectedFileName, onPickFile, result
       {segments.length > 0 && (
         <div className="segment-chips">
           {segments.map((seg, i) => (
-            <button key={i} type="button" className="ghost" onClick={() => { seek(seg.start); onSelect(seg.trackId); }}>
-              🔔 {seg.start.toFixed(1)}초 · #{seg.trackId}
+            <button key={i} type="button" className="btn small" onClick={() => { seek(seg.start); onSelect(seg.trackId); }}>
+              {seg.start.toFixed(1)}초 확정 · 사람 #{seg.trackId}
             </button>
           ))}
         </div>
@@ -217,11 +216,12 @@ function drawOverlay(canvas: HTMLCanvasElement, video: HTMLVideoElement, result:
   const toScreen = (b: number[]) => [offsetX + b[0] * scale, offsetY + b[1] * scale, (b[2] - b[0]) * scale, (b[3] - b[1]) * scale];
 
   const colors = {
-    confirmed: cssVar("--status-critical"),
-    suspected: cssVar("--status-warning"),
+    // 영상 위에 그리는 색이라 화면 테마와 상관없이 어두운 영상에서 잘 보이는 고정 값을 쓴다
+    confirmed: "#e5566f",
+    suspected: "#e5a93b",
     normal: "#ffffff",
-    cigarette: cssVar("--series-1"),
-    smoke: cssVar("--series-2"),
+    cigarette: cssVar("--accent"),
+    smoke: "#b4b4b4",
   };
   const t = video.currentTime;
   ctx.font = "600 13px system-ui, -apple-system, sans-serif";
@@ -243,7 +243,7 @@ function drawOverlay(canvas: HTMLCanvasElement, video: HTMLVideoElement, result:
     ctx.strokeRect(x, y, w, h);
 
     const ratioText = check?.ratio !== null && check?.ratio !== undefined ? ` · 판정 ${Math.round(check.ratio * 100)}%` : "";
-    drawLabel(ctx, `${confirmed ? "🔔 " : ""}#${track.summary.track_id}${ratioText}`, x, y, color);
+    drawLabel(ctx, `${confirmed ? "확정 · " : ""}#${track.summary.track_id}${ratioText}`, x, y, color);
 
     for (const obj of check?.objects ?? []) {
       const [ox, oy, ow, oh] = toScreen(obj.box);
@@ -263,6 +263,7 @@ function drawLabel(ctx: CanvasRenderingContext2D, text: string, x: number, y: nu
   ctx.fillStyle = background;
   ctx.fillRect(x, top - 18, textWidth + padding * 2, 18);
   // 밝은 배경색(흰색·노랑) 위에는 검정, 그 외에는 흰 글자
-  ctx.fillStyle = background === "#ffffff" || background.toLowerCase() === "#fab219" ? "#0b0b0b" : "#ffffff";
+  // 밝은 바탕(흰색·노랑·회색) 위에는 검정, 어두운 바탕 위에는 흰 글자
+  ctx.fillStyle = ["#ffffff", "#e5a93b", "#b4b4b4"].includes(background.toLowerCase()) ? "#0b0b0b" : "#ffffff";
   ctx.fillText(text, x + padding, top - 3);
 }

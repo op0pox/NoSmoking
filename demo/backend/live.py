@@ -203,6 +203,8 @@ class LiveSession:
             "mouth_cig": round(scores["mouth_cig"], 2) if scores else None,
             "ratio": round(ef.last_ratio, 2) if ef else None,
             "confirmed": bool(ef and ef.confirmed),
+            # 10초 판정 창: 최근 2차 확인 결과를 시간 순서대로 (True = 그 확인에서 흡연 판정)
+            "recent": [bool(paths) for _, paths, *_ in self._pipe.recent_checks.get(tid, ())],
             "announcer_state": announcer.state if announcer else None,
         }
 
