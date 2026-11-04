@@ -108,7 +108,7 @@ export default function LivePage() {
     setLive(await fetchLiveState());
   }
 
-  const requiredRatio = status?.default_params.event_confirm_ratio ?? 0.6;
+  const requiredRatio = status?.default_params.event_confirm_ratio ?? 0.5;
   const people = live?.people ?? [];
   const events = live?.events ?? [];
 
