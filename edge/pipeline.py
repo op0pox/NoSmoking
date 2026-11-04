@@ -76,9 +76,10 @@ MOTION_PAIR_MIN_CONF = 0.5     # 모션과 짝지을 담배·연기의 최소 �
 CIG_NEAR_MOUTH_DIST = 0.5      # cigarette 박스 중심과 입 추정 위치 사이 거리(어깨너비 배수)가 이 값 이하면
                                 # "입 근처 담배"로 본다. 2026-10-27 실측(v5): 흡연 영상의 검출은 61~84%가
                                 # 이 범위 안이었고, 물 마시는 영상의 물병 오검출은 3%뿐이었다(손 쪽에 몰림).
-MOUTH_CIG_CONF_THRESHOLD = 0.5  # 입 근처 담배가 이 신뢰도 이상이면 모션·연기 짝 없이도 그 프레임을
+MOUTH_CIG_CONF_THRESHOLD = 0.4  # 입 근처 담배가 이 신뢰도 이상이면 모션·연기 짝 없이도 그 프레임을
                                  # "흡연"으로 판정한다(#39). 손을 입 근처에 계속 들고 피워 puff가 안 쌓이고,
                                  # 연기도 잘 안 잡히는 경우를 위한 경로. 오탐은 위치 조건으로 막는다.
+                                 # 2026-11-04 0.5 → 0.4 (#64): 확정 비율 0.5와 함께 test5를 새로 잡고 drink는 그대로.
 
 # PipelineEvent.kind 값
 EVENT_CONFIRMED = "confirmed"   # 시간 필터가 미확정 → 확정으로 바뀐 순간
@@ -390,7 +391,7 @@ class SmokingPipeline:
         )
 
         # 시간 필터: 순간적인 오탐 프레임 하나로 이벤트가 확정되지 않도록
-        # 최근 10초 윈도 내 판정 비율(60%)을 본다
+        # 최근 10초 윈도 내 판정 비율(EVENT_CONFIRM_RATIO)을 본다
         ef = self.event_filters.get(track_id)
         if ef is None:
             ef = EventTimeFilter(track_id)

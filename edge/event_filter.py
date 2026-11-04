@@ -1,5 +1,5 @@
 """
-edge/event_filter.py — 시간 필터 (10초 윈도, 60% 판정 비율)
+edge/event_filter.py — 시간 필터 (10초 윈도, 50% 판정 비율)
 
 1차(모션)+2차(객체 감지) 합산 판정을 프레임 단위로 그대로 이벤트화하면
 순간적인 오탐(각도·블러로 한 프레임만 잘못 걸린 경우 등)에도 이벤트가
@@ -17,7 +17,9 @@ from collections import deque
 from typing import Optional
 
 EVENT_WINDOW_SEC = 10.0      # 판정 비율을 계산할 슬라이딩 윈도 길이
-EVENT_CONFIRM_RATIO = 0.6    # 윈도 내 흡연 판정 비율이 이 값 이상이면 이벤트 확정
+EVENT_CONFIRM_RATIO = 0.5    # 윈도 내 흡연 판정 비율이 이 값 이상이면 이벤트 확정. 2026-11-04 0.6 → 0.5 (#64):
+                             # 담배 검출이 띄엄띄엄 나와 진짜 흡연도 60%를 못 넘는 경우가 많았다(test5).
+                             # 물 마시기(drink)는 최고 20%라 여유가 30%p 남는다.
 
 
 class EventTimeFilter:
