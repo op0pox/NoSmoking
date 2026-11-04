@@ -38,7 +38,7 @@ export default function HomePage() {
       <img
         className="home-banner"
         src={bannerUrl}
-        alt="AI 흡연 감지 시스템. 실시간 영상 분석으로 흡연 행위를 자동으로 감지하고, 안내 음성으로 금연을 안내합니다."
+        alt="실시간 감지 · 자동 음성 안내. AI 흡연 감지 시스템. 실시간 영상 분석으로 흡연을 자동 감지하고, 음성으로 즉시 안내합니다."
         width={2172}
         height={724}
       />
