@@ -58,8 +58,9 @@ FastAPI + SQLite(→PostgreSQL) → Streamlit 대시보드(시간대 히트맵, 
 | 음성 | 사전 녹음 mp3 재생 | 실시간 TTS 안 씀, 마이크 없음 |
 | 서버 | FastAPI + SQLite (개발) | POST /events, POST /heartbeat |
 | 대시보드 | Streamlit | 선택사항. 메타데이터만 표시 |
-| 웹 데모 화면 | React + FastAPI | localhost 전용 실시간 페이지 + 영상 분석 페이지. 영상 저장·외부 전송 없음, 업로드 영상은 처리 후 즉시 삭제 (docs/기능명세서.md 7장) |
+| 웹 데모 화면 | React + FastAPI | localhost 전용 실시간 페이지 + 영상 분석 페이지 + 판정 기록. 실시간 입력은 웹캠 또는 같은 공유기 안의 네트워크 카메라(RTSP·HTTP, 사설 IP만 허용). 영상 저장·외부 전송 없음, 업로드 영상은 처리 후 즉시 삭제 (docs/기능명세서.md 7장) |
 | 데이터 | Roboflow (클래스 2개: cigarette=0, smoke=1) | 연초·전자담배 기기는 cigarette로 통합, 연기·에어로졸은 smoke로 통합 (이슈 #1 기준). 저장소에 데이터셋 커밋 금지 |
+| 외부 CCTV 데이터셋 | 안전사고 CCTV 영상(얼굴 모자이크) + 라벨 json | 라벨은 군집(Gathering)·인파(Crowd)뿐이고 흡연은 설명 글에만 있음 → 그대로 학습 불가, 장면 단위 평가용. 일부 영상만 프레임을 뽑아 직접 박스 라벨링 후 v6 학습 (docs/기능명세서.md 5.5) |
 
 ## 저장소 구조
 
@@ -67,8 +68,9 @@ FastAPI + SQLite(→PostgreSQL) → Streamlit 대시보드(시간대 히트맵, 
 edge/          # 파이(현장 장치)에서 돌아갈 코드: 감지 파이프라인, 음성, 이벤트 전송
 server/        # FastAPI, DB
 dashboard/     # Streamlit
-training/      # 학습 스크립트, 전처리, data.yaml, download_dataset.py
+training/      # 학습 노트북(notebooks/yolo_train_colab.ipynb), 라벨링용 프레임 추출(extract_frames.py)
 eval/          # 정량 평가 도구(python -m eval.run), 정답 라벨(labels.csv)
+test_videos/   # 평가 영상 + CCTV 라벨 json(labels/). gitignore — 개인정보, 커밋 금지
 demo/          # 웹 데모 (localhost 전용): backend(FastAPI) + frontend(React + TypeScript)
 assets/audio/  # 안내 음성 mp3 (현재 임시 파일, make_placeholder_audio.py로 생성)
 docs/          # 기획서, 가이드, 회의록
@@ -80,6 +82,7 @@ docs/          # 기획서, 가이드, 회의록
 - 커밋 메시지: `feat:` `fix:` `docs:` `refactor:` `chore:` `exp:` + 한글 설명.
 - **커밋 금지**: 데이터셋(이미지·영상·라벨), 모델 가중치(.pt/.onnx/.hef), `.env`, `runs/`. 자체 촬영 영상은 팀원 얼굴이 포함된 개인정보다.
 - train/val 분리는 반드시 촬영 세션(영상) 단위로. 프레임 단위로 섞으면 성능이 뻥튀기된다.
+- 학습에 쓴 영상은 평가 세트(eval/labels.csv)에 넣지 않는다. 현재 v6 학습용: CCTV E04_012·E04_020·E04_043(흡연), E04_003(음료 부정 샘플).
 
 ## 자주 쓸 파라미터 (튜닝 대상, 코드에선 상수로 모을 것)
 
@@ -90,6 +93,7 @@ docs/          # 기획서, 가이드, 회의록
 ## Claude Code에게
 
 - 기능을 추가할 때 위 "영상 무저장" 원칙과 정밀도 우선 기조를 항상 지켜라. 디버깅 목적이라도 프레임을 디스크에 쓰는 코드는 기본적으로 만들지 말고, 꼭 필요하면 명시적 `--debug-save` 플래그 뒤에 숨기고 경고 주석을 달아라.
+  - 예외: `training/extract_frames.py`는 **학습 데이터 준비 전용**이라 사진을 저장한다. 저장 폴더가 .gitignore에 없으면 멈춘다. `edge/`·`demo/` 코드에서 가져다 쓰지 말 것.
 - 의존성은 가볍게 유지하라. 파이5에서 돌아야 한다. 무거운 프레임워크 추가 전에 대안을 먼저 검토하라.
 - 모델 관련 코드에서 YOLOv8n의 네트워크 구조를 바꾸는 제안(레이어 추가·교체, attention 모듈 등)은 하지 마라. 구조 변경은 Hailo 컴파일 실패로 직결된다. 성능 개선은 데이터·증강·임계값 튜닝으로 접근하라.
 - 임계값·매직넘버는 파일 상단 상수나 config로 모아라. 5주차와 9주차에 집중 튜닝 예정이다.
