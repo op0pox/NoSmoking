@@ -39,12 +39,31 @@ def _ts() -> str:
     return time.strftime("%H:%M:%S")
 
 
+# 지금 재생 중인 플레이어 프로세스. 스피커는 하나라서 모든 사람(VoiceAnnouncer)이 함께 쓴다.
+_current_player: Optional[subprocess.Popen] = None
+
+
+def is_playing() -> bool:
+    """안내 음성이 아직 재생 중인지."""
+    return _current_player is not None and _current_player.poll() is None
+
+
 def _play_async(path: str) -> Optional[subprocess.Popen]:
     """OS 기본 플레이어로 mp3를 논블로킹 재생한다.
+
+    이미 다른 안내가 재생 중이면 새 안내는 건너뛴다. 안내 음성이 길어서(1차 약 17초)
+    두 사람이 연달아 확정되면 소리가 겹쳐 알아들을 수 없기 때문이다. 같은 스피커
+    앞에 있으니 먼저 나온 안내를 함께 듣는다고 본다.
 
     재생 실패(파일 없음, 플레이어 없음 등)해도 예외를 삼키고 경고만
     출력한다 — 안내 음성 하나 때문에 감지 파이프라인 전체가 멈추면 안 된다.
     """
+    global _current_player
+
+    if is_playing():
+        print(f"[알림] 다른 안내가 재생 중이라 건너뜁니다: {path}")
+        return None
+
     if not Path(path).is_file():
         print(f"[경고] 안내 음성 파일을 찾을 수 없습니다: {path} (재생 건너뜀)")
         return None
@@ -52,10 +71,12 @@ def _play_async(path: str) -> Optional[subprocess.Popen]:
     system = platform.system()
     try:
         if system == "Darwin":
-            return subprocess.Popen(["afplay", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            _current_player = subprocess.Popen(
+                ["afplay", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
         elif system == "Linux":
             # 라즈베리파이 등 — mpg123을 가장 가벼운 mp3 전용 플레이어로 우선 시도
-            return subprocess.Popen(
+            _current_player = subprocess.Popen(
                 ["mpg123", "-q", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
             )
         else:
@@ -64,6 +85,7 @@ def _play_async(path: str) -> Optional[subprocess.Popen]:
     except FileNotFoundError:
         print(f"[경고] 오디오 재생 명령을 찾을 수 없습니다({system}). mp3: {path}")
         return None
+    return _current_player
 
 
 class VoiceAnnouncer:
