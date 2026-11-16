@@ -72,7 +72,7 @@ training/      # 학습 노트북(notebooks/yolo_train_colab.ipynb), 라벨링�
 eval/          # 정량 평가 도구(python -m eval.run), 정답 라벨(labels.csv)
 test_videos/   # 평가 영상 + CCTV 라벨 json(labels/). gitignore — 개인정보, 커밋 금지
 demo/          # 웹 데모 (localhost 전용): backend(FastAPI) + frontend(React + TypeScript)
-assets/audio/  # 안내 음성 mp3 (현재 임시 파일, make_placeholder_audio.py로 생성)
+assets/audio/  # 안내 음성 mp3 (1차: 팀이 준비한 음성 / 2차: 임시 파일, make_placeholder_audio.py로 생성)
 docs/          # 기획서, 가이드, 회의록
 ```
 
