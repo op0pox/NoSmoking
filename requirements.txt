@@ -1,0 +1,12 @@
+# 금연존 지킴이 — 파이썬 의존성
+# 설치: python -m pip install -r requirements.txt
+# 확인한 환경: Python 3.12, ultralytics 8.4, macOS (Apple Silicon)
+
+# 감지 파이프라인 (edge/, eval/)
+ultralytics>=8.4      # YOLOv8n-pose, YOLOv8n. torch·opencv-python·numpy를 함께 설치한다
+lap>=0.5              # ByteTrack 사람 추적에 필요
+
+# 웹 데모 백엔드 (demo/backend/)
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
