@@ -80,8 +80,9 @@ def open_local_camera(index: int) -> cv2.VideoCapture:
     if not cap.isOpened():
         cap.release()
         raise SourceError(
-            f"카메라 {index}번을 열 수 없습니다. 시스템 설정 > 개인정보 보호 및 보안 > 카메라에서 "
-            "백엔드를 실행한 터미널(또는 IDE)에 권한이 있는지 확인하고, 다른 카메라 번호도 시도해 보세요."
+            f"카메라 {index}번을 열 수 없습니다. 카메라 권한을 확인하고(macOS: 시스템 설정 > 개인정보 보호 및 보안 > "
+            "카메라에서 백엔드를 실행한 터미널 허용 / Windows: 설정 > 개인 정보 > 카메라에서 데스크톱 앱 접근 허용), "
+            "다른 앱이 카메라를 쓰고 있지 않은지, 다른 카메라 번호도 시도해 보세요."
         )
     return cap
 
