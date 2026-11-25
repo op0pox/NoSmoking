@@ -48,6 +48,27 @@ def is_playing() -> bool:
     return _current_player is not None and _current_player.poll() is None
 
 
+WINDOWS_LOAD_TIMEOUT_SEC = 5  # Windows에서 mp3 길이를 읽어 오기를 기다리는 최대 시간
+
+
+def _windows_play_script(path: str) -> str:
+    """Windows PowerShell로 mp3를 처음부터 끝까지 재생하는 명령을 만든다."""
+    uri = Path(path).resolve().as_uri()      # file:///C:/... 형식 (한글·공백도 안전)
+    uri = uri.replace("'", "''")             # PowerShell 작은따옴표 문자열 안에서의 '
+    tries = int(WINDOWS_LOAD_TIMEOUT_SEC * 10)
+    return (
+        "Add-Type -AssemblyName PresentationCore; "
+        "$p = New-Object System.Windows.Media.MediaPlayer; "
+        f"$p.Open([Uri]'{uri}'); $p.Play(); "
+        # 파일 길이를 알 때까지 기다린 뒤(최대 몇 초), 그 길이만큼 기다렸다가 끝낸다
+        f"$i = 0; while (-not $p.NaturalDuration.HasTimeSpan -and $i -lt {tries}) "
+        "{ Start-Sleep -Milliseconds 100; $i++ }; "
+        "if ($p.NaturalDuration.HasTimeSpan) "
+        "{ Start-Sleep -Milliseconds ([int]$p.NaturalDuration.TimeSpan.TotalMilliseconds) }; "
+        "$p.Close()"
+    )
+
+
 def _play_async(path: str) -> Optional[subprocess.Popen]:
     """OS 기본 플레이어로 mp3를 논블로킹 재생한다.
 
@@ -78,6 +99,14 @@ def _play_async(path: str) -> Optional[subprocess.Popen]:
             # 라즈베리파이 등 — mpg123을 가장 가벼운 mp3 전용 플레이어로 우선 시도
             _current_player = subprocess.Popen(
                 ["mpg123", "-q", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+        elif system == "Windows":
+            # Windows 기본 PowerShell의 미디어 재생기로 mp3를 튼다 (추가 설치 없음).
+            # 재생이 끝날 때까지 프로세스가 살아 있어서, 재생 중인지(is_playing) 판단이 다른 OS와 같다.
+            _current_player = subprocess.Popen(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", _windows_play_script(path)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),  # 검은 창이 뜨지 않게
             )
         else:
             print(f"[경고] {system} 플랫폼용 오디오 재생 명령이 정의되지 않았습니다: {path}")

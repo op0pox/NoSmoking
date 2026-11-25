@@ -298,7 +298,7 @@ def main():
     args = parser.parse_args()
 
     overrides = apply_overrides(args.overrides)
-    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     labels = load_labels(Path(args.labels))
     if not args.include_reference:
         labels = [l for l in labels if l.split == "main"]

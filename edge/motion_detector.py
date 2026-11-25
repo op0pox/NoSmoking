@@ -39,6 +39,9 @@ from overlay import render_overlay
 from pipeline import SmokingPipeline
 
 def select_device() -> str:
+    """추론 장치를 고른다: NVIDIA GPU(cuda) → 맥 GPU(mps) → CPU 순."""
+    if torch.cuda.is_available():
+        return "cuda"
     if torch.backends.mps.is_available():
         return "mps"
     return "cpu"

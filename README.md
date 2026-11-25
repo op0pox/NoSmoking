@@ -81,9 +81,9 @@ docs/                기능 명세서
 |---|---|
 | Python | 3.12 (확인한 버전) |
 | Node.js | 18 이상 (웹 데모 화면) |
-| 운영체제 | macOS 또는 Linux. Windows는 안내 음성 재생이 아직 지원되지 않습니다 ([한계](#9-현재-성능과-한계) 참고) |
+| 운영체제 | macOS, Windows, Linux. Windows는 [Windows에서 설치](#windows에서-설치) 참고 |
 | 카메라 | 노트북 웹캠, 또는 같은 공유기 안의 IP 카메라·폰 IP 카메라 앱 |
-| 음성 재생 | macOS는 기본 `afplay`, Linux는 `mpg123` 설치 필요 (`sudo apt install mpg123`) |
+| 음성 재생 | macOS는 기본 `afplay`, Windows는 기본 PowerShell(추가 설치 없음), Linux는 `mpg123` 설치 필요 (`sudo apt install mpg123`) |
 
 ### 1) 코드 받기
 
@@ -122,6 +122,44 @@ cd demo/frontend
 npm install
 cd ../..
 ```
+
+### Windows에서 설치
+
+명령은 **PowerShell**에서 실행합니다. 위 1)~4)와 순서는 같고, 명령만 조금 다릅니다.
+
+1. 미리 설치할 것
+   - [Python 3.12](https://www.python.org/downloads/) — 설치 첫 화면에서 **"Add python.exe to PATH"를 체크**합니다
+   - [Git](https://git-scm.com/download/win), [Node.js LTS](https://nodejs.org/)
+2. 코드와 파이썬 환경
+   ```powershell
+   git clone https://github.com/op0pox/NoSmoking.git
+   cd NoSmoking
+   py -3.12 -m venv NS-venv
+   NS-venv\Scripts\activate
+   python -m pip install -r requirements.txt
+   ```
+   `activate`에서 "스크립트를 실행할 수 없습니다" 오류가 나면 한 번만 아래를 실행하고 다시 시도합니다.
+   ```powershell
+   Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+   ```
+3. **NVIDIA 그래픽카드가 있으면** (선택, 속도가 크게 빨라집니다)
+   기본 설치는 CPU용입니다. [pytorch.org](https://pytorch.org/get-started/locally/)에서 Windows · Pip · CUDA를 고르면 나오는 설치 명령을 실행합니다.
+   그 뒤 `python -c "import torch; print(torch.cuda.is_available())"`가 `True`면 자동으로 GPU를 씁니다.
+4. 모델 파일: [model-cig-v5](https://github.com/op0pox/NoSmoking/releases/tag/model-cig-v5)에서 `cigarette-v5-best.pt`를 받아 `NoSmoking` 폴더 바로 안에 둡니다.
+5. 웹 데모 화면: `cd demo\frontend` → `npm install` → `cd ..\..`
+6. 실행 (터미널 두 개)
+   ```powershell
+   # 터미널 1 — NoSmoking 폴더에서
+   NS-venv\Scripts\activate
+   python -m uvicorn demo.backend.app:app --host 127.0.0.1 --port 8000
+
+   # 터미널 2 — demo\frontend 폴더에서
+   npm run dev
+   ```
+   브라우저에서 http://127.0.0.1:5173 을 엽니다.
+
+- 카메라가 안 열리면 **설정 > 개인 정보 및 보안 > 카메라**에서 "데스크톱 앱이 카메라에 액세스하도록 허용"을 켜고, 카메라를 쓰는 다른 앱(Zoom 등)을 닫습니다.
+- 안내 음성은 Windows 기본 PowerShell로 재생합니다(추가 설치 없음).
 
 ## 5. 실행 — 웹 데모
 
@@ -206,7 +244,7 @@ v5 모델 검증 결과(두 클래스 평균): Precision 0.90 · Recall 0.75 · 
 
 알려진 한계:
 - 사람이 멀리 작게 찍히거나 여러 명이 겹치는 장면에서는 흡연을 놓칠 수 있습니다. 3fps 이하 영상은 동작 조건 밖입니다.
-- Windows에서는 안내 음성 재생 명령이 아직 없습니다(경고만 출력하고 감지는 계속됩니다).
+- Windows 실행(안내 음성 재생, NVIDIA GPU 사용)은 코드는 준비했지만 실제 Windows 노트북에서의 확인은 아직입니다.
 - 실제 IP 카메라·라즈베리파이에서는 아직 시험하지 않았습니다. 하드웨어 이식은 향후 과제입니다.
 - 남은 개선 과제와 원인 분석은 [기능 명세서 8장](docs/기능명세서.md)에 있습니다.
 

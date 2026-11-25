@@ -52,7 +52,8 @@ from .live import LiveSession  # noqa: E402
 
 POSE_MODEL = os.environ.get("NOSMOKING_POSE_MODEL", str(REPO_ROOT / "yolov8n-pose.pt"))
 CIGARETTE_MODEL = os.environ.get("NOSMOKING_CIGARETTE_MODEL", str(REPO_ROOT / "cigarette-v5-best.pt"))
-DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
+# 추론 장치: NVIDIA GPU(cuda) → 맥 GPU(mps) → CPU 순
+DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 FIRST_MP3 = str(REPO_ROOT / "assets" / "audio" / "first_announce.mp3")
 SECOND_MP3 = str(REPO_ROOT / "assets" / "audio" / "second_announce.mp3")
 DATA_DIR = Path(__file__).resolve().parent / "data"
